@@ -1,0 +1,7 @@
+{
+  "_base": {
+    "exclude_files": {
+      "external/": "third-party dependencies are not our code to fix"
+    }
+  }
+}
