@@ -1,0 +1,11 @@
+test --test_output=errors
+test --test_arg=-test.shuffle=on
+
+build:race --@io_bazel_rules_go//go/config:race
+
+# bazel-contrib/rules_go#3548: the race flag reaches the exec config used for
+# tool targets like //:gazelle-runner, where cgo is off, and rules_go fails
+# analysis with "race instrumentation can't be enabled when cgo is disabled".
+# The Go toolchain dropped that requirement, and CGO_ENABLED=0 go test -race
+# passes. rules_go 0.62.0 still checks it. Restrict a race run to the tests.
+test:race --build_tests_only
