@@ -1,0 +1,18 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "benchreport",
+    srcs = [
+        "metrics.go",
+        "report.go",
+        "result.go",
+    ],
+    importpath = "github.com/iampat/benchmarks/scaling-queue-postgres/internal/benchreport",
+    visibility = ["//scaling-queue-postgres:__subpackages__"],
+)
+
+go_test(
+    name = "benchreport_test",
+    srcs = ["benchreport_test.go"],
+    deps = [":benchreport"],
+)

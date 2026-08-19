@@ -1,5 +1,10 @@
 version: "3"
 
+includes:
+  scaling-queue-postgres:
+    taskfile: ./scaling-queue-postgres
+    dir: .
+
 tasks:
   build:
     desc: Build every Bazel target.

@@ -1,0 +1,34 @@
+version: "3"
+
+vars:
+  ITEST_PORT: 55433
+  ITEST_DSN: postgres://postgres:itest@127.0.0.1:55433/postgres
+
+tasks:
+  bench:
+    desc: Full staged run. One JSON result per cell lands in scaling-queue-postgres/results/.
+    cmds:
+      - bazel run //scaling-queue-postgres/cmd/bench -- {{.CLI_ARGS}}
+
+  bench:quick:
+    desc: Short smoke run to validate the pipeline. Results are not kept.
+    cmds:
+      - bazel run //scaling-queue-postgres/cmd/bench -- -warmup=2s -window=5s -prefill=2000
+        -backlog-cap=5000 -workers=4 -results-dir={{.TMPDIR | default "/tmp"}}/scaling-queue-postgres-smoke
+
+  report:
+    desc: Build scaling-queue-postgres/results/REPORT.md from the recorded JSON results.
+    cmds:
+      - bazel run //scaling-queue-postgres/cmd/report -- {{.CLI_ARGS}}
+
+  test:integration:
+    desc: Run the queue integration test against a throwaway container.
+    cmds:
+      - podman run -d --rm --name scaling-queue-postgres-itest -p 127.0.0.1:{{.ITEST_PORT}}:5432
+        -e POSTGRES_PASSWORD=itest docker.io/library/postgres:18
+      - defer: podman stop scaling-queue-postgres-itest
+      # -h 127.0.0.1 skips the socket-only bootstrap server the image starts first.
+      - until podman exec scaling-queue-postgres-itest pg_isready -h 127.0.0.1 -U postgres -q; do sleep 1; done
+      - bazel test //scaling-queue-postgres/internal/queue:queue_test
+        --test_env=PGQUEUE_TEST_DSN={{.ITEST_DSN}}
+        --nocache_test_results --test_output=summary

@@ -1,0 +1,43 @@
+{
+  "benchmark": "scaling-queue-postgres",
+  "stage": "1-skip-locked",
+  "workers": 64,
+  "producers": 4,
+  "batch_size": 10,
+  "warmup_seconds": 10,
+  "window_seconds": 120,
+  "started_at": "2026-08-18T20:08:46.589358Z",
+  "completed_tasks": 46160,
+  "enqueued_tasks": 82500,
+  "throughput_per_sec": 384.6666666666667,
+  "p50_ms": 568.786042,
+  "p95_ms": 6647.900459,
+  "p99_ms": 11715.633375,
+  "sample_count": 4616,
+  "retries": 40398,
+  "empty_dequeues": 0,
+  "backlog_start": 20000,
+  "backlog_end": 49990,
+  "valid": true,
+  "env": {
+    "argv": [
+      "/Users/ali/Library/Caches/bazel/_bazel_ali/91452a6867053b046bb1fca5253c045b/execroot/_main/bazel-out/darwin_arm64-fastbuild/bin/pgqueue/cmd/bench/bench_/bench"
+    ],
+    "image": "docker.io/library/postgres:18",
+    "image_digest": "sha256:772ab753f714afefc07b096906b4961e2bb576938c7d007beaa9b62d80680c48",
+    "server_version": "PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2) on aarch64-unknown-linux-gnu, compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit",
+    "server_settings": {
+      "autovacuum": "on",
+      "autovacuum_naptime": "1min",
+      "fsync": "on",
+      "max_connections": "200",
+      "shared_buffers": "128MB",
+      "synchronous_commit": "on"
+    },
+    "goos": "darwin",
+    "goarch": "arm64",
+    "num_cpu": 16,
+    "git_commit": "41d1c085ae04315a64fbe46982187d9c8bf796eb",
+    "vm_cpus": 4
+  }
+}
