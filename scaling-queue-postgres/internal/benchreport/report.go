@@ -8,6 +8,11 @@ import (
 	"strings"
 )
 
+var modeTitles = map[string]string{
+	"drain":  "Benchmark 1, simple queue (insert everything, then consume)",
+	"steady": "Benchmark 2, task queue (insert, claim, and complete together)",
+}
+
 func BuildReport(results []Result) string {
 	var b strings.Builder
 	b.WriteString("# scaling-queue-postgres benchmark report\n")
@@ -36,52 +41,53 @@ func BuildReport(results []Result) string {
 			fmt.Fprintf(&b, "- Settings: %s\n", strings.Join(kv, ", "))
 		}
 
-		byWorkers := groupBy(envResults, func(r Result) int { return r.Workers })
-		for _, w := range sortedKeys(byWorkers) {
-			fmt.Fprintf(&b, "\n### %d workers\n\n", w)
-			b.WriteString("| stage | tasks/s | vs prev | p50 ms | p95 ms | p99 ms | retries | empty | runs |\n")
-			b.WriteString("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n")
+		byMode := groupBy(envResults, func(r Result) string { return r.Mode })
+		for _, mode := range sortedKeys(byMode) {
+			title, ok := modeTitles[mode]
+			if !ok {
+				title = mode
+			}
+			fmt.Fprintf(&b, "\n### %s\n", title)
 
-			byStage := groupBy(byWorkers[w], stageLabel)
-			prev := 0.0
-			for _, stage := range sortedKeys(byStage) {
-				cell := byStage[stage]
-				valid := slices.DeleteFunc(slices.Clone(cell), func(r Result) bool { return !r.Valid })
-				if len(valid) == 0 {
-					fmt.Fprintf(&b, "| %s | invalid: %s | | | | | | | %d |\n",
-						stage, strings.Join(cell[0].InvalidReasons, "; "), len(cell))
-					continue
+			byWorkers := groupBy(byMode[mode], func(r Result) int { return r.Workers })
+			for _, w := range sortedKeys(byWorkers) {
+				fmt.Fprintf(&b, "\n#### %d claim loops\n\n", w)
+				b.WriteString("| stage | tasks/s | vs prev | claim p50 | claim p95 | done p95 | in flight | Little err | retries | runs |\n")
+				b.WriteString("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n")
+
+				byStage := groupBy(byWorkers[w], func(r Result) string { return r.Stage })
+				prev := 0.0
+				for _, stage := range sortedKeys(byStage) {
+					cell := byStage[stage]
+					valid := slices.DeleteFunc(slices.Clone(cell), func(r Result) bool { return !r.Valid })
+					if len(valid) == 0 {
+						fmt.Fprintf(&b, "| %s | invalid: %s | | | | | | | | %d |\n",
+							stage, strings.Join(cell[0].InvalidReasons, "; "), len(cell))
+						continue
+					}
+					tput := median(valid, func(r Result) float64 { return r.ThroughputPerSec })
+					delta := "—"
+					if prev > 0 {
+						delta = fmt.Sprintf("%+.0f%%", (tput/prev-1)*100)
+					}
+					prev = tput
+					fmt.Fprintf(&b, "| %s | %.0f | %s | %.2f ms | %.2f ms | %.2f ms | %.0f | %.1f%% | %.0f | %d |\n",
+						stage, tput, delta,
+						median(valid, func(r Result) float64 { return r.P50Millis }),
+						median(valid, func(r Result) float64 { return r.P95Millis }),
+						median(valid, func(r Result) float64 { return r.DoneP95Millis }),
+						median(valid, func(r Result) float64 { return r.MeanInFlight }),
+						median(valid, func(r Result) float64 { return r.LittleErrorPercent }),
+						median(valid, func(r Result) float64 { return float64(r.Retries) }),
+						len(valid))
 				}
-				tput := median(valid, func(r Result) float64 { return r.ThroughputPerSec })
-				delta := "—"
-				if prev > 0 {
-					delta = fmt.Sprintf("%+.0f%%", (tput/prev-1)*100)
-				}
-				prev = tput
-				fmt.Fprintf(&b, "| %s | %.0f | %s | %.2f | %.2f | %.2f | %.0f | %.0f | %d |\n",
-					stage, tput, delta,
-					median(valid, func(r Result) float64 { return r.P50Millis }),
-					median(valid, func(r Result) float64 { return r.P95Millis }),
-					median(valid, func(r Result) float64 { return r.P99Millis }),
-					median(valid, func(r Result) float64 { return float64(r.Retries) }),
-					median(valid, func(r Result) float64 { return float64(r.EmptyDequeues) }),
-					len(valid))
 			}
 		}
 	}
 	b.WriteString("\nLatency percentiles are closed-loop service times, retries included.\n")
+	b.WriteString("\"Little err\" is how far tasks in flight sat from throughput times mean\n")
+	b.WriteString("task duration. A small number means the run reached a steady state.\n")
 	return b.String()
-}
-
-func stageLabel(r Result) string {
-	label := r.Stage
-	if r.Shards > 1 {
-		label += fmt.Sprintf(" (shards %d)", r.Shards)
-	}
-	if r.HoldSeconds > 0 {
-		label += fmt.Sprintf(" (hold %gs)", r.HoldSeconds)
-	}
-	return label
 }
 
 func argvLine(r Result) string {

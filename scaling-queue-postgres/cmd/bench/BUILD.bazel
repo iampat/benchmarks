@@ -9,6 +9,7 @@ go_library(
         "//scaling-queue-postgres/internal/benchreport",
         "//scaling-queue-postgres/internal/pgcontainer",
         "//scaling-queue-postgres/internal/queue",
+        "@org_golang_x_time//rate",
     ],
 )
 

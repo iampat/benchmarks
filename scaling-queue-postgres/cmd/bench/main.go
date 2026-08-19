@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -17,6 +18,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/time/rate"
+
 	"github.com/iampat/benchmarks/scaling-queue-postgres/internal/benchreport"
 	"github.com/iampat/benchmarks/scaling-queue-postgres/internal/pgcontainer"
 	"github.com/iampat/benchmarks/scaling-queue-postgres/internal/queue"
@@ -25,17 +28,21 @@ import (
 const queueName = "bench"
 
 type config struct {
+	mode           string
 	stages         []queue.Stage
 	workers        []int
-	producers      int
+	completers     int
+	slots          int
+	shards         int
 	batch          int
-	enqueueBatch   int
+	createBatch    int
+	durationMin    time.Duration
+	durationMax    time.Duration
+	producers      int
+	targetBacklog  int64
+	prefill        int
 	warmup         time.Duration
 	window         time.Duration
-	prefill        int
-	backlogCap     int64
-	hold           time.Duration
-	shards         int
 	repeat         int
 	dsn            string
 	image          string
@@ -102,7 +109,7 @@ func run() error {
 		}
 	}
 
-	ctl, err := queue.Open(ctx, dsn, 2, nil)
+	ctl, err := queue.Open(ctx, dsn, 8, nil)
 	if err != nil {
 		return err
 	}
@@ -125,7 +132,7 @@ func run() error {
 	for _, w := range cfg.workers {
 		maxWorkers = max(maxWorkers, w)
 	}
-	if need := maxWorkers + cfg.producers + 8; need > maxConns {
+	if need := maxWorkers + cfg.completers + cfg.producers + 16; need > maxConns {
 		return fmt.Errorf("need %d connections but server max_connections is %d", need, maxConns)
 	}
 
@@ -141,10 +148,12 @@ func run() error {
 					return err
 				}
 				slog.Info("cell done",
-					"stage", st.Name, "workers", w, "repeat", rep+1,
+					"mode", cfg.mode, "stage", st.Name, "workers", w, "repeat", rep+1,
 					"tasks_per_sec", fmt.Sprintf("%.0f", res.ThroughputPerSec),
-					"p95_ms", fmt.Sprintf("%.2f", res.P95Millis),
-					"retries", res.Retries, "valid", res.Valid, "result", path)
+					"claim_p95_ms", fmt.Sprintf("%.2f", res.P95Millis),
+					"in_flight", res.MeanInFlight, "little_err_pct",
+					fmt.Sprintf("%.1f", res.LittleErrorPercent),
+					"valid", res.Valid, "result", path)
 			}
 		}
 	}
@@ -154,33 +163,45 @@ func run() error {
 func runCell(ctx context.Context, ctl *queue.Store, dsn string, st queue.Stage,
 	workers int, cfg config, env benchreport.Environment,
 ) (benchreport.Result, error) {
-	res := benchreport.Result{
-		Benchmark:     "scaling-queue-postgres",
-		Stage:         st.Name,
-		Workers:       workers,
-		Producers:     cfg.producers,
-		BatchSize:     cfg.batch,
-		WarmupSeconds: cfg.warmup.Seconds(),
-		WindowSeconds: cfg.window.Seconds(),
-		HoldSeconds:   cfg.hold.Seconds(),
-		StartedAt:     time.Now().UTC(),
-		BacklogStart:  int64(cfg.prefill),
-		Env:           env,
-	}
 	shards := 1
 	if st.Sharded {
 		shards = cfg.shards
 	}
-	res.Shards = shards
+	res := benchreport.Result{
+		Benchmark:       "scaling-queue-postgres",
+		Mode:            cfg.mode,
+		Stage:           st.Name,
+		Workers:         workers,
+		Completers:      cfg.completers,
+		Producers:       cfg.producers,
+		Slots:           cfg.slots,
+		Shards:          shards,
+		BatchSize:       cfg.batch,
+		CreateBatch:     cfg.createBatch,
+		DurationMinSecs: cfg.durationMin.Seconds(),
+		DurationMaxSecs: cfg.durationMax.Seconds(),
+		WarmupSeconds:   cfg.warmup.Seconds(),
+		WindowSeconds:   cfg.window.Seconds(),
+		CompletionBatch: st.CompletionBatch,
+		StartedAt:       time.Now().UTC(),
+		Env:             env,
+	}
+
 	if err := ctl.SetupStage(ctx, st); err != nil {
+		return res, err
+	}
+
+	prefill := cfg.prefill
+	if cfg.mode == "steady" {
+		prefill = int(cfg.targetBacklog)
+	}
+	if err := fill(ctx, ctl, prefill, cfg.createBatch, shards); err != nil {
 		return res, err
 	}
 	if err := ctl.Checkpoint(ctx); err != nil {
 		return res, err
 	}
-	if err := ctl.Enqueue(ctx, queueName, cfg.prefill, shards); err != nil {
-		return res, err
-	}
+	res.BacklogStart = int64(prefill)
 
 	var params map[string]string
 	if st.SyncCommit != "" {
@@ -191,7 +212,11 @@ func runCell(ctx context.Context, ctl *queue.Store, dsn string, st queue.Stage,
 		return res, err
 	}
 	defer wstore.Close()
-
+	cstore, err := queue.Open(ctx, dsn, int32(cfg.completers), params)
+	if err != nil {
+		return res, err
+	}
+	defer cstore.Close()
 	pstore, err := queue.Open(ctx, dsn, int32(cfg.producers), params)
 	if err != nil {
 		return res, err
@@ -199,15 +224,20 @@ func runCell(ctx context.Context, ctl *queue.Store, dsn string, st queue.Stage,
 	defer pstore.Close()
 
 	var counters queue.Counters
-	rec := benchreport.NewRecorder(workers)
+	claimRec := benchreport.NewRecorder(workers)
+	doneRec := benchreport.NewRecorder(cfg.completers)
+	slots := queue.NewSlots(cfg.slots)
+	sched := queue.NewScheduler(cfg.completers * 64)
 
 	cellCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	errs := make(chan error, workers+cfg.producers)
+	errs := make(chan error, workers+cfg.completers+cfg.producers)
 	var wg sync.WaitGroup
 
+	go sched.Run(cellCtx)
+
 	for i := 0; i < workers; i++ {
-		lane := rec.Lane(i)
+		lane := claimRec.Lane(i)
 		wq := queue.StageQueue{
 			Store: wstore, Stage: st, Queue: queueName, Batch: cfg.batch,
 			Shard: i % shards, Shards: shards,
@@ -218,52 +248,94 @@ func runCell(ctx context.Context, ctl *queue.Store, dsn string, st queue.Stage,
 			errs <- queue.RunWorker(cellCtx, wq, queue.WorkerConfig{
 				Backoff:           queue.BackoffConfig{Base: time.Millisecond, Max: 100 * time.Millisecond},
 				EmptyPollInterval: 10 * time.Millisecond,
-				Hold:              cfg.hold,
+				MinDuration:       cfg.durationMin,
+				MaxDuration:       cfg.durationMax,
+				Slots:             slots,
+				Sched:             sched,
 				Record:            lane.Record,
 			}, &counters)
 		}()
 	}
 
-	prefill := int64(cfg.prefill)
-	backlog := func() int64 { return prefill + counters.Enqueued.Load() - counters.Dequeued.Load() }
-	pq := queue.StageQueue{Store: pstore, Stage: st, Queue: queueName, Shards: shards}
-	for i := 0; i < cfg.producers; i++ {
+	for i := 0; i < cfg.completers; i++ {
+		lane := doneRec.Lane(i)
+		cq := queue.StageQueue{Store: cstore, Stage: st, Queue: queueName}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errs <- queue.RunProducer(cellCtx, pq, queue.ProducerConfig{
-				BatchSize:    cfg.enqueueBatch,
-				CheckEvery:   10,
-				HighWater:    cfg.backlogCap,
-				LowWater:     cfg.backlogCap / 2,
-				Backlog:      backlog,
-				PollInterval: 20 * time.Millisecond,
+			errs <- queue.RunCompleter(cellCtx, cq, queue.CompleterConfig{
+				Batch:   st.CompletionBatch,
+				MaxWait: 5 * time.Millisecond,
+				Slots:   slots,
+				Sched:   sched,
+				Record:  lane.Record,
 			}, &counters)
 		}()
 	}
 
+	if cfg.mode == "steady" {
+		limiter := rate.NewLimiter(rate.Limit(2_000_000), cfg.createBatch*2)
+		backlog := func() int64 {
+			return int64(prefill) + counters.Created.Load() - counters.Claimed.Load()
+		}
+		pq := queue.StageQueue{Store: pstore, Stage: st, Queue: queueName, Shards: shards}
+		for i := 0; i < cfg.producers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				errs <- queue.RunProducer(cellCtx, pq, queue.ProducerConfig{
+					BatchSize: cfg.createBatch,
+					Limiter:   limiter,
+				}, &counters)
+			}()
+		}
+		go queue.RunController(cellCtx, limiter, queue.ControllerConfig{
+			Target:   cfg.targetBacklog,
+			Gain:     0.2,
+			MinRate:  float64(cfg.createBatch) * 10,
+			MaxRate:  2_000_000,
+			Interval: 250 * time.Millisecond,
+			Backlog:  backlog,
+		}, &counters)
+	}
+
 	waitErr := wait(cellCtx, cfg.warmup)
-	completedStart := counters.Completed.Load()
+
+	doneStart := counters.Done.Load()
 	retriesStart := counters.Retries.Load()
-	emptyStart := counters.EmptyDequeues.Load()
-	rec.SetRecording(true)
+	emptyStart := counters.EmptyClaims.Load()
+	windowStart := time.Now()
+	claimRec.SetRecording(true)
+	doneRec.SetRecording(true)
+
+	sampler := newSampler(&counters, func() int64 {
+		return int64(prefill) + counters.Created.Load() - counters.Claimed.Load()
+	})
+	sampleCtx, stopSampler := context.WithCancel(cellCtx)
+	go sampler.run(sampleCtx, 200*time.Millisecond)
+
 	if waitErr == nil {
 		waitErr = wait(cellCtx, cfg.window)
 	}
-	rec.SetRecording(false)
-	completedEnd := counters.Completed.Load()
+	elapsed := time.Since(windowStart)
+	stopSampler()
+	claimRec.SetRecording(false)
+	doneRec.SetRecording(false)
+
+	res.CompletedTasks = counters.Done.Load() - doneStart
 	res.Retries = counters.Retries.Load() - retriesStart
-	res.EmptyDequeues = counters.EmptyDequeues.Load() - emptyStart
+	res.EmptyClaims = counters.EmptyClaims.Load() - emptyStart
+	res.CreatedTasks = counters.Created.Load()
 	cancel()
 
 	drained := make(chan struct{})
 	go func() { wg.Wait(); close(drained) }()
-	drainTimer := time.NewTimer(30 * time.Second)
+	drainTimer := time.NewTimer(60 * time.Second)
 	defer drainTimer.Stop()
 	select {
 	case <-drained:
 	case <-drainTimer.C:
-		return res, errors.New("workers did not stop within 30s")
+		return res, errors.New("workers did not stop within 60s")
 	}
 	if waitErr != nil {
 		return res, waitErr
@@ -275,14 +347,18 @@ func runCell(ctx context.Context, ctl *queue.Store, dsn string, st queue.Stage,
 		}
 	}
 
-	res.CompletedTasks = completedEnd - completedStart
-	res.EnqueuedTasks = counters.Enqueued.Load()
-	res.ThroughputPerSec = float64(res.CompletedTasks) / cfg.window.Seconds()
-	stats := benchreport.Percentiles(rec.Samples())
-	res.SampleCount = stats.Count
-	res.P50Millis = float64(stats.P50) / float64(time.Millisecond)
-	res.P95Millis = float64(stats.P95) / float64(time.Millisecond)
-	res.P99Millis = float64(stats.P99) / float64(time.Millisecond)
+	res.ThroughputPerSec = float64(res.CompletedTasks) / elapsed.Seconds()
+	claim := benchreport.Percentiles(claimRec.Samples())
+	res.SampleCount = claim.Count
+	res.P50Millis = float64(claim.P50) / float64(time.Millisecond)
+	res.P95Millis = float64(claim.P95) / float64(time.Millisecond)
+	res.P99Millis = float64(claim.P99) / float64(time.Millisecond)
+	done := benchreport.Percentiles(doneRec.Samples())
+	res.DoneP95Millis = float64(done.P95) / float64(time.Millisecond)
+
+	res.MeanInFlight = sampler.meanInFlight()
+	res.MeanBacklog = sampler.meanBacklog()
+	res.BacklogVariationPercent = sampler.backlogVariationPercent()
 
 	end, err := ctl.Backlog(ctx, queueName)
 	if err != nil {
@@ -290,24 +366,157 @@ func runCell(ctx context.Context, ctl *queue.Store, dsn string, st queue.Stage,
 	}
 	res.BacklogEnd = end
 
+	// Little's Law: tasks in flight = throughput x mean task duration. A run
+	// that reached a steady state satisfies it. A run that did not is still
+	// filling or draining its pipeline, whatever its throughput says.
+	meanDuration := (cfg.durationMin.Seconds() + cfg.durationMax.Seconds()) / 2
+	res.ExpectedInFlight = res.ThroughputPerSec * meanDuration
+	if res.ExpectedInFlight > 0 {
+		res.LittleErrorPercent = math.Abs(res.MeanInFlight-res.ExpectedInFlight) / res.ExpectedInFlight * 100
+	}
+
 	res.Valid = true
 	invalid := func(reason string) {
 		res.Valid = false
 		res.InvalidReasons = append(res.InvalidReasons, reason)
 	}
-	// Transient empty polls happen on a healthy queue, for example on a
-	// briefly empty shard head. They only invalidate the cell when workers
-	// spent a meaningful share of their polls idle.
-	if batches := res.CompletedTasks / int64(cfg.batch); res.EmptyDequeues*20 > batches {
-		invalid("empty polls exceeded 5% of dequeue attempts")
-	}
-	if res.BacklogEnd < int64(workers*cfg.batch) {
-		invalid("backlog nearly drained at window end")
-	}
 	if res.CompletedTasks == 0 {
 		invalid("no completions in window")
 	}
+	if claims := res.CompletedTasks; claims > 0 && res.EmptyClaims*20 > claims {
+		invalid("empty claims exceeded 5% of claim attempts")
+	}
+	if res.BacklogEnd < int64(workers*cfg.batch) {
+		invalid("queue drained before the window ended")
+	}
+	if res.LittleErrorPercent > 10 {
+		invalid(fmt.Sprintf("tasks in flight missed Little's Law by %.0f%%", res.LittleErrorPercent))
+	}
+	if sampler.peakInFlight() > float64(cfg.slots)*0.95 {
+		invalid("task slots ran out, so slots capped throughput")
+	}
+	if cfg.mode == "steady" && res.BacklogVariationPercent > 20 {
+		invalid(fmt.Sprintf("queue length varied by %.0f%%, so it was not steady",
+			res.BacklogVariationPercent))
+	}
 	return res, nil
+}
+
+type sampler struct {
+	counters *queue.Counters
+	backlog  func() int64
+	mu       sync.Mutex
+	inFlight []float64
+	depth    []float64
+	peak     float64
+}
+
+func (s *sampler) peakInFlight() float64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.peak
+}
+
+func newSampler(c *queue.Counters, backlog func() int64) *sampler {
+	return &sampler{counters: c, backlog: backlog}
+}
+
+func (s *sampler) run(ctx context.Context, every time.Duration) {
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			f := float64(s.counters.InFlight.Load())
+			s.mu.Lock()
+			s.inFlight = append(s.inFlight, f)
+			s.depth = append(s.depth, float64(s.backlog()))
+			s.peak = math.Max(s.peak, f)
+			s.mu.Unlock()
+		}
+	}
+}
+
+func (s *sampler) meanInFlight() float64 { return mean(s.snapshot(true)) }
+func (s *sampler) meanBacklog() float64  { return mean(s.snapshot(false)) }
+
+func (s *sampler) backlogVariationPercent() float64 {
+	d := s.snapshot(false)
+	m := mean(d)
+	if m == 0 || len(d) < 2 {
+		return 0
+	}
+	var sum float64
+	for _, v := range d {
+		sum += (v - m) * (v - m)
+	}
+	return math.Sqrt(sum/float64(len(d))) / m * 100
+}
+
+func (s *sampler) snapshot(inFlight bool) []float64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if inFlight {
+		return append([]float64(nil), s.inFlight...)
+	}
+	return append([]float64(nil), s.depth...)
+}
+
+func mean(v []float64) float64 {
+	if len(v) == 0 {
+		return 0
+	}
+	var sum float64
+	for _, x := range v {
+		sum += x
+	}
+	return sum / float64(len(v))
+}
+
+func fill(ctx context.Context, s *queue.Store, total, batch, shards int) error {
+	if total <= 0 {
+		return nil
+	}
+	const parallel = 8
+	batches := (total + batch - 1) / batch
+	work := make(chan int, batches)
+	for i := 0; i < batches; i++ {
+		n := batch
+		if rem := total - i*batch; rem < batch {
+			n = rem
+		}
+		work <- n
+	}
+	close(work)
+
+	errs := make(chan error, parallel)
+	var wg sync.WaitGroup
+	for i := 0; i < parallel; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for n := range work {
+				if err := ctx.Err(); err != nil {
+					errs <- err
+					return
+				}
+				if err := s.Create(ctx, queueName, n, shards); err != nil {
+					errs <- err
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func wait(ctx context.Context, d time.Duration) error {
@@ -324,39 +533,43 @@ func wait(ctx context.Context, d time.Duration) error {
 func parseFlags(args []string) (config, error) {
 	fs := flag.NewFlagSet("bench", flag.ContinueOnError)
 	stages := fs.String("stages", "all", "comma-separated stage names, or all")
-	workers := fs.String("workers", "4,16,64", "comma-separated worker counts")
+	workers := fs.String("workers", "16,32", "comma-separated claim-loop counts")
 	cfg := config{}
-	fs.IntVar(&cfg.producers, "producers", 4, "producer goroutines")
-	fs.IntVar(&cfg.batch, "batch", 10, "dequeue batch size")
-	fs.IntVar(&cfg.enqueueBatch, "enqueue-batch", 25, "enqueue batch size")
-	fs.DurationVar(&cfg.warmup, "warmup", 10*time.Second, "warm-up before measuring")
-	fs.DurationVar(&cfg.window, "window", 2*time.Minute, "measurement window")
-	fs.IntVar(&cfg.prefill, "prefill", 20000, "tasks inserted before workers start")
-	fs.Int64Var(&cfg.backlogCap, "backlog-cap", 50000, "producers pause above this backlog")
-	fs.DurationVar(&cfg.hold, "hold", 0, "simulated task duration in PENDING")
-	fs.IntVar(&cfg.shards, "shards", 1, "shard count for the sharded stage")
+	fs.StringVar(&cfg.mode, "mode", "steady", "drain or steady")
+	fs.IntVar(&cfg.completers, "completers", 32, "goroutines that write DONE")
+	fs.IntVar(&cfg.slots, "slots", 900000, "maximum tasks in flight")
+	fs.IntVar(&cfg.shards, "shards", 32, "shard count for the sharded stages")
+	fs.IntVar(&cfg.batch, "batch", 1, "tasks per claim")
+	fs.IntVar(&cfg.createBatch, "create-batch", 1000, "rows per insert")
+	fs.DurationVar(&cfg.durationMin, "duration-min", 10*time.Second, "shortest task duration")
+	fs.DurationVar(&cfg.durationMax, "duration-max", 20*time.Second, "longest task duration")
+	fs.IntVar(&cfg.producers, "producers", 4, "producer goroutines, steady mode only")
+	fs.Int64Var(&cfg.targetBacklog, "target-backlog", 200000, "queue length the controller holds")
+	fs.IntVar(&cfg.prefill, "prefill", 6_000_000, "rows inserted before a drain run")
+	fs.DurationVar(&cfg.warmup, "warmup", 60*time.Second, "warm-up before measuring")
+	fs.DurationVar(&cfg.window, "window", 5*time.Minute, "measurement window")
 	fs.IntVar(&cfg.repeat, "repeat", 1, "repeats per stage and worker count")
 	fs.StringVar(&cfg.dsn, "dsn", "", "use this Postgres instead of a managed container")
 	fs.StringVar(&cfg.image, "image", "docker.io/library/postgres:18", "container image")
 	fs.IntVar(&cfg.port, "port", 55432, "host port for the managed container")
 	fs.BoolVar(&cfg.keep, "keep-container", false, "do not stop the managed container")
 	fs.StringVar(&cfg.resultsDir, "results-dir", "scaling-queue-postgres/results", "where result JSON files land")
-	fs.IntVar(&cfg.maxConnections, "max-connections", 200, "max_connections for the managed container")
+	fs.IntVar(&cfg.maxConnections, "max-connections", 400, "max_connections for the managed container")
 	if err := fs.Parse(args); err != nil {
 		return cfg, err
 	}
 
+	if cfg.mode != "drain" && cfg.mode != "steady" {
+		return cfg, fmt.Errorf("mode must be drain or steady, got %q", cfg.mode)
+	}
 	if *stages == "all" {
 		cfg.stages = queue.Stages()
 	} else {
 		for _, name := range strings.Split(*stages, ",") {
 			st, ok := queue.StageByName(strings.TrimSpace(name))
 			if !ok {
-				var names []string
-				for _, s := range queue.Stages() {
-					names = append(names, s.Name)
-				}
-				return cfg, fmt.Errorf("unknown stage %q, valid: %s", name, strings.Join(names, ", "))
+				return cfg, fmt.Errorf("unknown stage %q, valid: %s",
+					name, strings.Join(queue.StageNames(), ", "))
 			}
 			cfg.stages = append(cfg.stages, st)
 		}
@@ -368,8 +581,10 @@ func parseFlags(args []string) (config, error) {
 		}
 		cfg.workers = append(cfg.workers, w)
 	}
-	if cfg.hold > 0 && cfg.hold >= cfg.warmup {
-		return cfg, fmt.Errorf("warmup %v must exceed hold %v to reach a steady state", cfg.warmup, cfg.hold)
+	// Tasks in flight need one full task duration to reach a steady state.
+	if cfg.warmup <= cfg.durationMax {
+		return cfg, fmt.Errorf("warmup %v must exceed the longest task duration %v",
+			cfg.warmup, cfg.durationMax)
 	}
 	if cfg.shards < 1 {
 		return cfg, fmt.Errorf("shards must be at least 1, got %d", cfg.shards)

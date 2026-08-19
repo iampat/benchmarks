@@ -7,19 +7,21 @@ type Stage struct {
 	Iso        pgx.TxIsoLevel
 	LockClause string
 	IndexDDL   string
-	// "" keeps the server default. Wave-2 stages set "off".
+	// "" keeps the server default. Later stages set "off".
 	SyncCommit string
 	// One CTE statement instead of SELECT then UPDATE in a transaction.
 	SingleStatement bool
-	// Dequeue filters on a shard column. N shards give N queue heads.
+	// A shard column splits the queue head into independent index tails.
 	Sharded bool
+	// Completions wait to travel together. 1 sends each one on its own.
+	CompletionBatch int
 }
 
-// CONSIDER(ali): every stage orders by (priority, created_at) so the stage-3
-// index can supply the sort. The blog's baseline orders by created_at only.
+// CONSIDER(ali): every stage orders by (priority, created_at) so the sharded
+// and partial indexes can supply the sort without a sort node.
 const (
-	selectBase        = "SELECT id FROM tasks WHERE queue_name = $1 AND status = 'ENQUEUED' ORDER BY priority, created_at LIMIT $2 "
-	selectShardedBase = "SELECT id FROM tasks WHERE queue_name = $1 AND shard = $2 AND status = 'ENQUEUED' ORDER BY priority, created_at LIMIT $3 "
+	selectBase        = "SELECT id FROM tasks WHERE queue_name = $1 AND status = 'CREATED' ORDER BY priority, created_at LIMIT $2 "
+	selectShardedBase = "SELECT id FROM tasks WHERE queue_name = $1 AND shard = $2 AND status = 'CREATED' ORDER BY priority, created_at LIMIT $3 "
 )
 
 func (s Stage) base() string {
@@ -33,42 +35,44 @@ func (s Stage) SelectSQL() string {
 	return s.base() + s.LockClause
 }
 
-func (s Stage) DequeueSQL() string {
+func (s Stage) ClaimSQL() string {
 	return "WITH c AS (" + s.base() + s.LockClause + ") " +
 		"UPDATE tasks SET status = 'PENDING', started_at = now() " +
 		"WHERE id IN (SELECT id FROM c) RETURNING id"
 }
 
 const (
-	basicIndexDDL = "CREATE INDEX tasks_dequeue_idx ON tasks (queue_name, created_at)"
+	basicIndexDDL = "CREATE INDEX tasks_claim_idx ON tasks (queue_name, created_at)"
 	// CONSIDER(ali): (queue_name, status, created_at) is an alternative vanilla
-	// index. It would shrink the stage-3 delta to "partial + presorted" only.
-	partialIndexDDL = "CREATE INDEX tasks_dequeue_idx ON tasks (queue_name, status, priority, created_at) WHERE status = 'ENQUEUED'"
-	shardedIndexDDL = "CREATE INDEX tasks_dequeue_idx ON tasks (queue_name, shard, priority, created_at) WHERE status = 'ENQUEUED'"
+	// index. It would shrink the partial-index delta to "partial plus presorted".
+	partialIndexDDL = "CREATE INDEX tasks_claim_idx ON tasks (queue_name, status, priority, created_at) WHERE status = 'CREATED'"
+	shardedIndexDDL = "CREATE INDEX tasks_claim_idx ON tasks (queue_name, shard, priority, created_at) WHERE status = 'CREATED'"
 )
 
-// Stages 0-3 replicate the DBOS article. Stages 4-6 chase a higher rate:
-// 4 relaxes commit durability, 5 removes a round trip, 6 splits the queue
-// head into N shards. Locking, the PENDING state, and table logging stay
-// in every stage.
+// Stages 0 to 3 replicate the DBOS article. Stages 4 to 7 go past it. Each
+// stage keeps every change of the stage above it.
 func Stages() []Stage {
 	skip := "FOR UPDATE SKIP LOCKED"
 	return []Stage{
-		{Name: "0-vanilla", Iso: pgx.RepeatableRead, LockClause: "FOR UPDATE", IndexDDL: basicIndexDDL},
-		{Name: "1-skip-locked", Iso: pgx.RepeatableRead, LockClause: skip, IndexDDL: basicIndexDDL},
-		{Name: "2-read-committed", Iso: pgx.ReadCommitted, LockClause: skip, IndexDDL: basicIndexDDL},
-		{Name: "3-partial-index", Iso: pgx.ReadCommitted, LockClause: skip, IndexDDL: partialIndexDDL},
+		{Name: "0-vanilla", Iso: pgx.RepeatableRead, LockClause: "FOR UPDATE", IndexDDL: basicIndexDDL, CompletionBatch: 1},
+		{Name: "1-skip-locked", Iso: pgx.RepeatableRead, LockClause: skip, IndexDDL: basicIndexDDL, CompletionBatch: 1},
+		{Name: "2-read-committed", Iso: pgx.ReadCommitted, LockClause: skip, IndexDDL: basicIndexDDL, CompletionBatch: 1},
+		{Name: "3-partial-index", Iso: pgx.ReadCommitted, LockClause: skip, IndexDDL: partialIndexDDL, CompletionBatch: 1},
 		{
 			Name: "4-async-commit", Iso: pgx.ReadCommitted, LockClause: skip, IndexDDL: partialIndexDDL,
-			SyncCommit: "off",
+			SyncCommit: "off", CompletionBatch: 1,
 		},
 		{
 			Name: "5-single-statement", Iso: pgx.ReadCommitted, LockClause: skip, IndexDDL: partialIndexDDL,
-			SyncCommit: "off", SingleStatement: true,
+			SyncCommit: "off", SingleStatement: true, CompletionBatch: 1,
 		},
 		{
 			Name: "6-sharded", Iso: pgx.ReadCommitted, LockClause: skip, IndexDDL: shardedIndexDDL,
-			SyncCommit: "off", SingleStatement: true, Sharded: true,
+			SyncCommit: "off", SingleStatement: true, Sharded: true, CompletionBatch: 1,
+		},
+		{
+			Name: "7-batched-completion", Iso: pgx.ReadCommitted, LockClause: skip, IndexDDL: shardedIndexDDL,
+			SyncCommit: "off", SingleStatement: true, Sharded: true, CompletionBatch: 100,
 		},
 	}
 }
@@ -80,4 +84,12 @@ func StageByName(name string) (Stage, bool) {
 		}
 	}
 	return Stage{}, false
+}
+
+func StageNames() []string {
+	var names []string
+	for _, s := range Stages() {
+		names = append(names, s.Name)
+	}
+	return names
 }

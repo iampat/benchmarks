@@ -11,8 +11,8 @@ import (
 
 func TestStages(t *testing.T) {
 	stages := queue.Stages()
-	if len(stages) != 7 {
-		t.Fatalf("got %d stages, want 7", len(stages))
+	if len(stages) != 8 {
+		t.Fatalf("got %d stages, want 8", len(stages))
 	}
 
 	seen := map[string]bool{}
@@ -31,8 +31,14 @@ func TestStages(t *testing.T) {
 		} else if got != base {
 			t.Errorf("stage %s: query base differs from stage 0: %q", st.Name, got)
 		}
-		if !strings.Contains(st.IndexDDL, "tasks_dequeue_idx") {
-			t.Errorf("stage %s: IndexDDL does not create tasks_dequeue_idx: %q", st.Name, st.IndexDDL)
+		if !strings.Contains(got, "status = 'CREATED'") {
+			t.Errorf("stage %s: claim query does not select CREATED rows: %q", st.Name, got)
+		}
+		if !strings.Contains(st.IndexDDL, "tasks_claim_idx") {
+			t.Errorf("stage %s: IndexDDL does not create tasks_claim_idx: %q", st.Name, st.IndexDDL)
+		}
+		if st.CompletionBatch < 1 {
+			t.Errorf("stage %s: completion batch %d must be at least 1", st.Name, st.CompletionBatch)
 		}
 	}
 
@@ -54,27 +60,28 @@ func TestStages(t *testing.T) {
 			t.Errorf("stage %s lock clause = %q", st.Name, st.LockClause)
 		}
 	}
-
 	if stages[0].IndexDDL != stages[1].IndexDDL || stages[1].IndexDDL != stages[2].IndexDDL {
 		t.Error("stages 0-2 must share the same index DDL")
 	}
 	for _, st := range stages[3:] {
-		if !strings.Contains(st.IndexDDL, "WHERE status = 'ENQUEUED'") {
+		if !strings.Contains(st.IndexDDL, "WHERE status = 'CREATED'") {
 			t.Errorf("stage %s index is not partial: %q", st.Name, st.IndexDDL)
 		}
 	}
 
-	// Wave 2 flags accumulate one per stage.
+	// Each stage keeps every change of the stage above it.
 	wantFlags := []struct {
 		name            string
 		syncOff         bool
 		singleStatement bool
 		sharded         bool
+		completionBatch int
 	}{
-		{"3-partial-index", false, false, false},
-		{"4-async-commit", true, false, false},
-		{"5-single-statement", true, true, false},
-		{"6-sharded", true, true, true},
+		{"3-partial-index", false, false, false, 1},
+		{"4-async-commit", true, false, false, 1},
+		{"5-single-statement", true, true, false, 1},
+		{"6-sharded", true, true, true, 1},
+		{"7-batched-completion", true, true, true, 100},
 	}
 	for i, want := range wantFlags {
 		st := stages[i+3]
@@ -82,7 +89,9 @@ func TestStages(t *testing.T) {
 			t.Errorf("stage %d name = %q, want %q", i+3, st.Name, want.name)
 		}
 		if (st.SyncCommit == "off") != want.syncOff ||
-			st.SingleStatement != want.singleStatement || st.Sharded != want.sharded {
+			st.SingleStatement != want.singleStatement ||
+			st.Sharded != want.sharded ||
+			st.CompletionBatch != want.completionBatch {
 			t.Errorf("stage %s flags = %+v, want %+v", st.Name, st, want)
 		}
 	}
@@ -91,16 +100,19 @@ func TestStages(t *testing.T) {
 	}
 }
 
-func TestDequeueSQL(t *testing.T) {
-	pending, _ := queue.StageByName("5-single-statement")
-	sql := pending.DequeueSQL()
-	for _, want := range []string{"WITH c AS (", "FOR UPDATE SKIP LOCKED", "status = 'PENDING'", "RETURNING id"} {
+func TestClaimSQL(t *testing.T) {
+	st, _ := queue.StageByName("5-single-statement")
+	sql := st.ClaimSQL()
+	for _, want := range []string{
+		"WITH c AS (", "FOR UPDATE SKIP LOCKED",
+		"status = 'PENDING'", "started_at = now()", "RETURNING id",
+	} {
 		if !strings.Contains(sql, want) {
-			t.Errorf("5-single-statement DequeueSQL missing %q: %s", want, sql)
+			t.Errorf("ClaimSQL missing %q: %s", want, sql)
 		}
 	}
-	if strings.Contains(sql, "completed_at") {
-		t.Errorf("5-single-statement DequeueSQL must not complete: %s", sql)
+	if strings.Contains(sql, "completed_at") || strings.Contains(sql, "'DONE'") {
+		t.Errorf("a claim must not complete the task: %s", sql)
 	}
 }
 
@@ -111,5 +123,8 @@ func TestStageByName(t *testing.T) {
 	st, ok := queue.StageByName("2-read-committed")
 	if !ok || st.Iso != pgx.ReadCommitted {
 		t.Errorf("StageByName(2-read-committed) = %+v, %v", st, ok)
+	}
+	if len(queue.StageNames()) != len(queue.Stages()) {
+		t.Error("StageNames must name every stage")
 	}
 }

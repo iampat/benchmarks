@@ -72,20 +72,21 @@ func (s *Store) Checkpoint(ctx context.Context) error {
 	return err
 }
 
-func (s *Store) Enqueue(ctx context.Context, queueName string, n, shards int) error {
+func (s *Store) Create(ctx context.Context, queueName string, n, shards int) error {
 	_, err := s.pool.Exec(ctx,
-		"INSERT INTO tasks (queue_name, shard, status, priority, payload) SELECT $1, floor(random() * $4)::smallint, 'ENQUEUED', 0, $2 FROM generate_series(1, $3)",
+		"INSERT INTO tasks (queue_name, shard, status, priority, payload) "+
+			"SELECT $1, floor(random() * $4)::smallint, 'CREATED', 0, $2 FROM generate_series(1, $3)",
 		queueName, payload, n, shards)
 	return err
 }
 
-func (s *Store) DequeueBatch(ctx context.Context, st Stage, queueName string, shard, limit int) ([]int64, error) {
+func (s *Store) Claim(ctx context.Context, st Stage, queueName string, shard, limit int) ([]int64, error) {
 	args := []any{queueName, limit}
 	if st.Sharded {
 		args = []any{queueName, shard, limit}
 	}
 	if st.SingleStatement {
-		rows, err := s.pool.Query(ctx, st.DequeueSQL(), args...)
+		rows, err := s.pool.Query(ctx, st.ClaimSQL(), args...)
 		if err != nil {
 			return nil, err
 		}
@@ -121,16 +122,16 @@ func (s *Store) DequeueBatch(ctx context.Context, st Stage, queueName string, sh
 	return ids, nil
 }
 
-func (s *Store) Complete(ctx context.Context, ids []int64) error {
+func (s *Store) Done(ctx context.Context, ids []int64) error {
 	_, err := s.pool.Exec(ctx,
-		"UPDATE tasks SET status = 'SUCCESS', completed_at = now() WHERE id = ANY($1)", ids)
+		"UPDATE tasks SET status = 'DONE', completed_at = now() WHERE id = ANY($1)", ids)
 	return err
 }
 
 func (s *Store) Backlog(ctx context.Context, queueName string) (int64, error) {
 	var n int64
 	err := s.pool.QueryRow(ctx,
-		"SELECT count(*) FROM tasks WHERE queue_name = $1 AND status = 'ENQUEUED'", queueName).Scan(&n)
+		"SELECT count(*) FROM tasks WHERE queue_name = $1 AND status = 'CREATED'", queueName).Scan(&n)
 	return n, err
 }
 

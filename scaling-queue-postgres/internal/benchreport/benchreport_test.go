@@ -68,10 +68,12 @@ func TestResultRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	want := benchreport.Result{
 		Benchmark:        "scaling-queue-postgres",
+		Mode:             "steady",
 		Stage:            "1-skip-locked",
 		Workers:          16,
 		StartedAt:        time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC),
 		ThroughputPerSec: 1234.5,
+		MeanInFlight:     300000,
 		Valid:            true,
 		Env: benchreport.Environment{
 			Argv:           []string{"bench", "-stages=1-skip-locked"},
@@ -86,7 +88,7 @@ func TestResultRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasSuffix(path, "20260818T120000-1-skip-locked-w16.json") {
+	if !strings.HasSuffix(path, "20260818T120000-steady-1-skip-locked-w16.json") {
 		t.Errorf("unexpected file name %s", path)
 	}
 	got, err := benchreport.ReadResults([]string{path})
@@ -94,7 +96,9 @@ func TestResultRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(got) != 1 || got[0].ThroughputPerSec != want.ThroughputPerSec ||
-		got[0].Stage != want.Stage || !got[0].StartedAt.Equal(want.StartedAt) {
+		got[0].Stage != want.Stage || got[0].Mode != want.Mode ||
+		got[0].MeanInFlight != want.MeanInFlight ||
+		!got[0].StartedAt.Equal(want.StartedAt) {
 		t.Errorf("round trip = %+v, want %+v", got, want)
 	}
 }
@@ -107,25 +111,29 @@ func TestBuildReport(t *testing.T) {
 		GOARCH:        "arm64",
 		NumCPU:        10,
 	}
-	mk := func(stage string, tput float64, valid bool) benchreport.Result {
+	mk := func(mode, stage string, tput float64, valid bool) benchreport.Result {
 		return benchreport.Result{
-			Stage: stage, Workers: 16, ThroughputPerSec: tput,
+			Mode: mode, Stage: stage, Workers: 16, ThroughputPerSec: tput,
 			Valid: valid, InvalidReasons: map[bool][]string{false: {"queue drained"}}[valid],
 			Env: env,
 		}
 	}
 	report := benchreport.BuildReport([]benchreport.Result{
-		mk("0-vanilla", 100, true),
-		mk("0-vanilla", 200, true),
-		mk("0-vanilla", 300, true),
-		mk("1-skip-locked", 400, true),
-		mk("2-read-committed", 0, false),
+		mk("steady", "0-vanilla", 100, true),
+		mk("steady", "0-vanilla", 200, true),
+		mk("steady", "0-vanilla", 300, true),
+		mk("steady", "1-skip-locked", 400, true),
+		mk("steady", "2-read-committed", 0, false),
+		mk("drain", "0-vanilla", 900, true),
 	})
 
 	for _, want := range []string{
-		"### 16 workers",
+		"Benchmark 1, simple queue",
+		"Benchmark 2, task queue",
+		"#### 16 claim loops",
 		"| 0-vanilla | 200 | — |",
 		"| 1-skip-locked | 400 | +100% |",
+		"| 0-vanilla | 900 | — |",
 		"invalid: queue drained",
 		"PostgreSQL 18.0",
 	} {

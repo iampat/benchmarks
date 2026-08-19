@@ -34,7 +34,7 @@ func TestStagesAgainstPostgres(t *testing.T) {
 			if err := store.SetupStage(ctx, st); err != nil {
 				t.Fatal(err)
 			}
-			if err := store.Enqueue(ctx, "itest", total, shards); err != nil {
+			if err := store.Create(ctx, "itest", total, shards); err != nil {
 				t.Fatal(err)
 			}
 			if n, err := store.Backlog(ctx, "itest"); err != nil || n != total {
@@ -53,20 +53,20 @@ func TestStagesAgainstPostgres(t *testing.T) {
 						var ids []int64
 						for {
 							var err error
-							ids, err = store.DequeueBatch(ctx, st, "itest", shard, 7)
+							ids, err = store.Claim(ctx, st, "itest", shard, 1)
 							if err == nil {
 								break
 							}
 							if !queue.Retryable(err) {
-								t.Errorf("dequeue: %v", err)
+								t.Errorf("claim: %v", err)
 								return
 							}
 						}
 						if len(ids) == 0 {
 							return
 						}
-						if err := store.Complete(ctx, ids); err != nil {
-							t.Errorf("complete: %v", err)
+						if err := store.Done(ctx, ids); err != nil {
+							t.Errorf("done: %v", err)
 							return
 						}
 						mu.Lock()
