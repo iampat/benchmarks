@@ -1,8 +1,76 @@
 # How the queue benchmark runs
 
 [README.md](README.md) reports what each optimization bought. This document
-covers how to reproduce that, how the harness works, and what the full
-parameter sweep shows.
+covers how to reproduce that, how the harness works, and how a run proves it
+measured a steady state.
+
+## The workload
+
+A task moves through three states.
+
+| State | Written by | Batch |
+| --- | --- | --- |
+| `CREATED` | a producer inserts it | 1000 rows per insert |
+| `PENDING` | a worker claims it | one task per statement |
+| `DONE` | a completer finishes it | one task per statement |
+
+Every task runs for a random 10 to 20 seconds between `PENDING` and `DONE`.
+Only the insert batches. A claim takes one task, because that is what a
+worker that runs one task does.
+
+A running task holds a slot and no database connection. A real worker
+behaves the same way. It claims a task, releases the connection, runs the
+task in its own process, then takes a connection again to finish. A task
+that held its connection would cap the benchmark at `max_connections`
+divided by 15 seconds, which measures the sleep instead of Postgres.
+
+One deadline heap holds every running task. One goroutine and one timer per
+task would cost more than the database at 300,000 tasks in flight.
+
+## The two benchmarks
+
+| Benchmark | Mode flag | Shape |
+| --- | --- | --- |
+| 1. simple queue | `-mode=drain` | Insert the whole backlog, then consume it. Producers stay idle during the window, so the queue only shrinks. |
+| 2. task queue | `-mode=steady` | Insert, claim, and complete run together. A controller holds the queue length near a target. |
+
+The two answer the same question by different routes, so they check each
+other. Benchmark 1 measures capacity with no producer competing for CPU.
+Benchmark 2 measures the rate the queue sustains while its length stays
+steady. A large gap between them means one of the two is wrong.
+
+In benchmark 2 the controller sets the insert rate to the measured
+completion rate, plus a correction for the error in queue length. The
+correction uses a gain of 0.2 per second, and a rate limiter paces the
+inserts. A queue that swings instead of settling shows up in the recorded
+queue variation.
+
+## Stages
+
+A stage is a named configuration of the claim path. All stages share one Go
+code path, so a comparison never measures different Go code.
+
+Stages 0 to 3 replicate the DBOS article.
+
+| Stage | Lock clause | Isolation | Index |
+| --- | --- | --- | --- |
+| `0-vanilla` | `FOR UPDATE` | `REPEATABLE READ` | `(queue_name, created_at)` |
+| `1-skip-locked` | `FOR UPDATE SKIP LOCKED` | `REPEATABLE READ` | same |
+| `2-read-committed` | `FOR UPDATE SKIP LOCKED` | `READ COMMITTED` | same |
+| `3-partial-index` | `FOR UPDATE SKIP LOCKED` | `READ COMMITTED` | partial, covering |
+
+Stages 4 to 7 go past the article. Each one adds to the stage above it.
+
+| Stage | Addition |
+| --- | --- |
+| `4-async-commit` | `synchronous_commit = off` on every session |
+| `5-single-statement` | The claim is one CTE, with no explicit transaction |
+| `6-sharded` | A `shard` column, and one pinned worker set per shard |
+| `7-batched-completion` | Completions that come due together share one statement |
+
+Stage 7 is the one place a batch above 1 appears after the insert. Claims
+stay one at a time. It measures what the other half of the statement load
+costs, because a claim and a completion are one statement each.
 
 ## Prerequisites
 
@@ -14,152 +82,67 @@ parameter sweep shows.
 ## Run
 
 The bench command starts a throwaway `postgres:18` container with podman and
-runs the selected cells. Each cell writes one JSON file into `results/`. The
-measurement window is 2 minutes per cell, so a full run needs about 30
-minutes.
+runs the selected cells. Each cell writes one JSON file into `results/`.
 
 ```sh
-task scaling-queue-postgres:bench                       # every stage, workers 4,16,64
-task scaling-queue-postgres:bench -- -stages=0-vanilla  # one stage
-task scaling-queue-postgres:bench -- -repeat=3          # medians need 3 repeats
-task scaling-queue-postgres:bench -- -dsn=postgres://…  # an existing server
-task scaling-queue-postgres:bench:quick                 # 5 second smoke run
+task scaling-queue-postgres:bench -- -mode=steady    # benchmark 2
+task scaling-queue-postgres:bench -- -mode=drain     # benchmark 1
+task scaling-queue-postgres:bench -- -dsn=postgres://…   # an existing server
+task scaling-queue-postgres:bench:quick              # 20 second smoke run
+task scaling-queue-postgres:report                   # build results/REPORT.md
 ```
-
-The record run for step 8 of the report:
-
-```sh
-task scaling-queue-postgres:bench -- \
-  '-dsn=postgres://postgres@/postgres?host=/tmp&port=55444' \
-  -stages=6-sharded -workers=32 -shards=32 \
-  -producers=8 -enqueue-batch=100 -hold=5s
-```
-
-`task scaling-queue-postgres:bench` wraps
-`bazel run //scaling-queue-postgres/cmd/bench`, which takes the same flags
-after `--`.
-
-The report command reads every JSON file and writes
-[results/REPORT.md](results/REPORT.md).
-
-```sh
-task scaling-queue-postgres:report
-```
-
-Results from different environments land in separate report sections. The
-report never averages across environments.
 
 ## Flags that shape a run
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
+| `-mode` | steady | `drain` or `steady` |
 | `-stages` | all | Which stages to run |
-| `-workers` | 4,16,64 | Worker counts to sweep |
-| `-shards` | 1 | Shard count for the sharded stage |
-| `-batch` | 10 | Tasks per claim |
-| `-hold` | 0 | Time a task stays in `PENDING` |
-| `-producers` | 4 | Producer goroutines |
-| `-window` | 2m | Measurement window per cell |
-| `-warmup` | 10s | Discarded time before the window |
-| `-prefill` | 20000 | Tasks inserted before the workers start |
-| `-backlog-cap` | 50000 | Backlog level where producers pause |
-| `-dsn` | none | Target server. Empty starts a container |
+| `-workers` | 16,32 | Claim loops to sweep |
+| `-completers` | 32 | Goroutines that write DONE |
+| `-shards` | 32 | Shard count for the sharded stages |
+| `-slots` | 900000 | Maximum tasks in flight |
+| `-batch` | 1 | Tasks per claim |
+| `-create-batch` | 1000 | Rows per insert |
+| `-duration-min` | 10s | Shortest task duration |
+| `-duration-max` | 20s | Longest task duration |
+| `-target-backlog` | 200000 | Queue length the controller holds |
+| `-prefill` | 6000000 | Rows inserted before a drain run |
+| `-warmup` | 60s | Discarded time before the window |
+| `-window` | 5m | Measurement window |
+| `-producers` | 4 | Producer goroutines, steady mode only |
 
-## Stages
+The warm-up must exceed the longest task duration, and the command refuses
+to start otherwise. Tasks in flight need one full task duration to reach a
+steady state, so a shorter warm-up would measure a filling pipeline.
 
-A stage is a named configuration of the claim path. All stages share one Go
-code path, so a comparison never measures different Go code. Only these
-fields differ.
+## How a cell proves it measured something
 
-Stages 0 to 3 replicate the DBOS article.
+A cell reports a number only when the run reached a steady state. Each check
+below marks the cell invalid, and the report shows invalid cells instead of
+charting them.
 
-| Stage | Lock clause | Isolation | Index |
-| --- | --- | --- | --- |
-| `0-vanilla` | `FOR UPDATE` | `REPEATABLE READ` | `(queue_name, created_at)` |
-| `1-skip-locked` | `FOR UPDATE SKIP LOCKED` | `REPEATABLE READ` | same |
-| `2-read-committed` | `FOR UPDATE SKIP LOCKED` | `READ COMMITTED` | same |
-| `3-partial-index` | `FOR UPDATE SKIP LOCKED` | `READ COMMITTED` | partial, covering |
+- **Little's Law.** Tasks in flight must equal throughput times mean task
+  duration, within 10 percent. A run that misses it was still filling or
+  draining its pipeline, whatever its throughput says. This is the strongest
+  check the harness has, because it fails for any error in the task
+  lifetime, the counters, or the window boundaries.
+- **Empty claims** must stay under 5 percent of claims. Above that the
+  workers waited for tasks, so the number measures the producers.
+- **Queue length** in steady mode must vary less than 20 percent. A queue
+  that swings did not hold steady, whatever its mean.
+- **Slots** must never reach 95 percent of the pool. At the cap, the slot
+  count sets throughput rather than the database.
+- **The backlog** must survive the window. A drained queue ends the
+  measurement early.
 
-Stages 4 to 6 go past the article. Each one adds to the stage above it.
+## Sizing a drain run
 
-| Stage | Addition |
-| --- | --- |
-| `4-async-commit` | `synchronous_commit = off` on every session |
-| `5-single-statement` | The claim is one CTE, with no explicit transaction |
-| `6-sharded` | A `shard` column, and one pinned worker set per shard |
-
-## Workload
-
-The benchmark measures a steady state. Producers insert tasks as fast as
-they can, and pause above the backlog cap. Workers claim tasks in a closed
-loop. The warm-up period runs first and its samples are discarded. The
-measurement window then counts completed tasks and records claim latency.
-A latency sample covers the first attempt to the successful commit, so it
-includes retry time.
-
-A cell is one stage at one worker count. Each cell starts with a fresh
-table, so bloat from one cell never reaches the next. Completed rows stay in
-the table for the whole window on purpose. Their index maintenance cost is
-what stage 3 removes.
-
-A cell is invalid when the backlog almost drained. It is also invalid when
-more than 5 percent of claim attempts found nothing to take. An invalid cell
-measures the producers, not the claim path. The report shows invalid cells
-instead of charting them.
-
-## Worker count sweep
-
-Worker count is the parameter that changed the most between stages. Before
-the shard column, more workers hurt past 16 workers. After it, 32 workers
-win.
-
-In the podman container with 4 virtual CPUs, no hold:
-
-| Stage | 4 workers | 16 workers | 64 workers |
-| --- | ---: | ---: | ---: |
-| `0-vanilla` | 796 | 691 | 214 |
-| `1-skip-locked` | 1,194 | 790 | 385 |
-| `2-read-committed` | 2,062 | 2,158 | 2,121 |
-| `3-partial-index` | 20,882 | 25,783 | 22,162 |
-
-Stage 0 and stage 1 lose throughput as workers arrive, because the workers
-contend. Stage 2 is flat. Stage 3 peaks at 16 workers.
-
-On native Postgres with `-hold=5s`:
-
-| Stage | 8 | 16 | 24 | 32 | 64 |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| `3-partial-index` | | 49,465 | | 32,610 | invalid |
-| `4-async-commit` | | 53,328 | | 41,578 | invalid |
-| `5-single-statement` | 52,097 | 58,556 | 53,987 | 45,522 | invalid |
-| `6-sharded` | | 68,484 | | 165,700 | invalid |
-
-The sharded stage uses one shard per worker. It reverses the pattern. Every
-earlier stage peaks at 16 workers and then falls. The sharded stage gains
-2.4 times from 16 workers to 32, because each worker owns its own queue
-head.
-
-## What the hold changes
-
-The `-hold` flag keeps a task in `PENDING` for a set time. A timer goroutine
-then writes the completion, so the worker does not wait for that write. The
-flag makes the workload realistic and it also raises throughput.
-
-Stage `5-single-statement` at 16 workers isolates both effects:
-
-| Server | Hold | tasks/s |
-| --- | --- | ---: |
-| podman, 8 CPUs, TCP | none | 40,122 |
-| native, TCP | none | 49,205 |
-| native, TCP | 5s | 58,556 |
-| native, unix socket | 5s | 60,055 |
-
-The container costs 23 percent. The hold adds 19 percent. The socket adds 3
-percent, which is close to the spread between repeated runs. Steps 7, 8, and
-9 of the report use these rows, one change at a time.
-
-[results/REPORT.md](results/REPORT.md) holds the complete tables, with p50,
-p95, and p99 latency, retry counts, and the exact command for each run.
+A drain run consumes its prefill and never refills. The prefill must exceed
+the rate times the warm-up plus the window. A 5 minute window at 20,000
+tasks per second needs about 7 million rows. Every stage gets the same
+prefill, because a different table size would change the claim cost and make
+the stages incomparable.
 
 ## Integration test
 
@@ -188,10 +171,10 @@ Postgres runs inside a virtual machine, and the disk, network, and CPU
 limits of that machine bound the result. A native server removes that layer.
 Compare stages inside one environment section, never across two.
 
-Each result file records the image digest or the native version, the server
-settings, the hardware, the git commit, and the exact command.
+Each result file records the server version, the settings, the hardware, the
+git commit, and the exact command.
 
-Latency percentiles are closed-loop service times. The workers are the
+Latency percentiles are closed-loop service times. The claim loops are the
 system under test, so these numbers do not model open-load response times.
 
 Postgres on macOS does not use `F_FULLFSYNC` by default. A native fsync
