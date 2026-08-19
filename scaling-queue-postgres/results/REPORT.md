@@ -8,6 +8,7 @@
 - Command: `bench -dsn=postgres://postgres@/postgres?host=/tmp&port=55444 -stages=6-sharded -workers=32 -shards=32 -producers=8 -enqueue-batch=100 -hold=5s`
 - Command: `bench -dsn=postgres://postgres@/postgres?host=/tmp&port=55444 -stages=6-sharded -workers=64 -shards=64 -producers=8 -enqueue-batch=100 -hold=5s`
 - Command: `bench -dsn=postgres://postgres@127.0.0.1:55444/postgres -stages=3-partial-index,4-async-commit,5-single-statement -workers=16,32,64 -hold=5s`
+- Command: `bench -dsn=postgres://postgres@127.0.0.1:55444/postgres -stages=5-single-statement -workers=16`
 - Command: `bench -dsn=postgres://postgres@127.0.0.1:55444/postgres -stages=5-single-statement -workers=8,16,24 -producers=8 -enqueue-batch=100 -hold=5s`
 - Settings: autovacuum=on, autovacuum_naptime=1min, fsync=on, max_connections=200, shared_buffers=128MB, synchronous_commit=on
 
@@ -23,7 +24,8 @@
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | 3-partial-index (hold 5s) | 49465 | — | 2.62 | 4.31 | 6.28 | 0 | 0 | 1 |
 | 4-async-commit (hold 5s) | 53328 | +8% | 2.78 | 5.23 | 8.17 | 0 | 0 | 1 |
-| 5-single-statement (hold 5s) | 58556 | +10% | 2.51 | 4.82 | 8.13 | 0 | 0 | 3 |
+| 5-single-statement | 49205 | -8% | 2.34 | 3.95 | 4.83 | 0 | 0 | 1 |
+| 5-single-statement (hold 5s) | 58556 | +19% | 2.51 | 4.82 | 8.13 | 0 | 0 | 3 |
 | 6-sharded (shards 16) (hold 5s) | 68484 | +17% | 0.79 | 19.54 | 26.53 | 0 | 8616 | 1 |
 
 ### 24 workers

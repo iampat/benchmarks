@@ -1,154 +1,225 @@
-# scaling-queue-postgres
+# Scaling a Postgres task queue: 796 to 165,700 tasks per second
 
-A Postgres task queue loses throughput to lock contention, serialization
-failures, and index maintenance. The DBOS article
+## The problem
+
+A task queue in Postgres is one table. A producer inserts a row with status
+`ENQUEUED`. A worker claims the oldest such row and sets it to `PENDING`. The
+worker runs the task and sets the row to `SUCCESS`.
+
+The claim is the hard part. Every worker wants the same row, the oldest one.
+Under load the workers contend for that row. The table also fills with
+finished rows, and the claim query must still read them.
+
+The DBOS article
 [Making Postgres Queues Scale](https://www.dbos.dev/blog/making-postgres-queues-scale)
-removes these costs one at a time. This benchmark replicates that path, then
-extends it to see how far one machine can go.
+removes three of these costs. This benchmark replicates that path on one
+machine, then goes past it.
 
-## Model
-
-A task is a row in the `tasks` table. A producer inserts tasks with status
-`ENQUEUED`. A worker runs a dequeue transaction: select the oldest `ENQUEUED`
-rows, lock them, and set them to `PENDING`. A separate update then sets them
-to `SUCCESS`. A stage is a named configuration of the dequeue path.
-
-## Stages 0-3: the article
-
-These four stages replicate the DBOS article's path. Each stage changes one
-variable on top of the previous one.
-
-| Stage              | Lock clause              | Isolation        | Index                                                            |
-| ------------------ | ------------------------ | ---------------- | ---------------------------------------------------------------- |
-| `0-vanilla`        | `FOR UPDATE`             | `REPEATABLE READ`| `(queue_name, created_at)`                                        |
-| `1-skip-locked`    | `FOR UPDATE SKIP LOCKED` | `REPEATABLE READ`| same                                                              |
-| `2-read-committed` | `FOR UPDATE SKIP LOCKED` | `READ COMMITTED` | same                                                              |
-| `3-partial-index`  | `FOR UPDATE SKIP LOCKED` | `READ COMMITTED` | `(queue_name, status, priority, created_at) WHERE status = 'ENQUEUED'` |
-
-All four share one Go code path. Only the lock clause, the isolation level,
-and the index differ.
-
-## Stages 4-6: past the article
-
-These three stages are not in the article. They chase a higher rate under a
-fixed constraint. Dequeue batch size stays at 10, rows stay locked, the
-`PENDING` state stays, and the table stays logged (WAL-backed).
-
-| Stage                | Change on top of the previous stage                          |
-| -------------------- | ------------------------------------------------------------ |
-| `4-async-commit`     | `synchronous_commit = off` on worker and producer sessions   |
-| `5-single-statement` | Dequeue is one CTE (`WITH ... UPDATE ... RETURNING`), no explicit transaction |
-| `6-sharded`          | A `shard` column gives the queue `-shards` heads, one pinned worker set each. Ordering weakens to per-shard FIFO. |
-
-`synchronous_commit = off` keeps every write in the WAL but stops the commit
-from waiting for the flush. A crash can lose the last moments of
-acknowledged work. That trade is normal for a queue and it is stage 4's
-whole point.
+Four rules hold for every step below. The claim batch stays at 10 tasks. Rows
+stay locked during a claim. The `PENDING` state stays. The table stays
+logged, so the write-ahead log (WAL) records every change.
 
 ## Results
 
-Numbers from this machine, one change at a time. Each step name links back
-to the row above it. `hold` is simulated task duration: tasks stay `PENDING`
-for that long while the worker keeps dequeuing.
+Each step keeps the changes of the steps above it. Each number is the best
+valid measurement for that step across worker counts.
 
-| # | Source | Step | tasks/s | Where |
-| - | --- | --- | ---: | --- |
-| 1 | article | `0-vanilla` | 796 | podman, 4 VM CPUs |
-| 2 | article | `3-partial-index` | 25,783 | podman, 4 VM CPUs |
-| 3 | ours | + more VM CPUs (4 -> 8) | 31,510 | podman, 8 VM CPUs |
-| 4 | ours | + `4-async-commit` | 33,149 | podman, 8 VM CPUs |
-| 5 | ours | + `5-single-statement` | 40,122 | podman, 8 VM CPUs |
-| 6 | ours | + native Postgres, unix socket, `hold=5s` | 60,055 | native, no VM |
-| 7 | ours | + `6-sharded` (32 shards) | 165,700 | native, `hold=5s` |
+| Step | tasks/s | Gain | From | Server |
+| --- | ---: | ---: | --- | --- |
+| 0. Naive claim query | 796 | — | article | podman, 4 CPUs |
+| 1. `SKIP LOCKED` | 1,194 | 1.5x | article | podman, 4 CPUs |
+| 2. `READ COMMITTED` | 2,158 | 1.8x | article | podman, 4 CPUs |
+| 3. Partial covering index | 25,783 | 12x | article | podman, 4 CPUs |
+| 4. Twice the server CPUs | 31,510 | 1.2x | this benchmark | podman, 8 CPUs |
+| 5. `synchronous_commit = off` | 33,149 | 1.05x | this benchmark | podman, 8 CPUs |
+| 6. One statement per claim | 40,122 | 1.2x | this benchmark | podman, 8 CPUs |
+| 7. Postgres outside the container | 49,205 | 1.2x | this benchmark | native |
+| 8. Task duration off the claim loop | 60,055 | 1.2x | this benchmark | native |
+| 9. 32 queue shards | 165,700 | 2.8x | this benchmark | native |
 
-Row 2 is the article's claim. `SKIP LOCKED`, `READ COMMITTED`, and a partial
-covering index buy a 32x jump over the naive query on this machine. Rows
-3-7 are this benchmark's own work, not in the article. The single biggest
-step past the article is row 7. Splitting the queue into independent heads
-removes the lock contention that a single FIFO head puts on every worker.
-Full tables with p50/p95/p99 and retry counts are in `results/REPORT.md`.
+The article's path gives 32x. The steps past it give another 6.4x.
+
+```
+                   log scale, one mark per doubling
+  0 vanilla        ║░                                             796
+  1 SKIP LOCKED    ║░░░░                                        1,194
+  2 READ COMMITTED ║░░░░░░░░                                    2,158
+  3 partial index  ║░░░░░░░░░░░░░░░░░░░░░░░░░░                 25,783
+  4 more CPUs      ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░               31,510
+  5 async commit   ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░               33,149
+  6 one statement  ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░              40,122
+  7 no container   ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░            49,205
+  8 task duration  ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░           60,055
+  9 32 shards      ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  165,700
+```
+
+[METHOD.md](METHOD.md) has the commands, the harness design, and the full
+worker-count sweep.
+
+[METHOD.md](METHOD.md) has the commands, the harness design, and the full
+worker-count sweep.
+
+## Step 0. The naive claim query
+
+The first version uses the obvious query.
+
+```sql
+SELECT id FROM tasks
+WHERE queue_name = $1 AND status = 'ENQUEUED'
+ORDER BY priority, created_at LIMIT 10
+FOR UPDATE;
+```
+
+Every worker reads the same 10 rows. One worker locks them. The others block
+on those locks. The `REPEATABLE READ` isolation level then aborts them with a
+serialization failure, so they retry and collide again.
+
+At 4 workers the run records 5,446 retries in 2 minutes. More workers make
+the queue slower. Throughput falls from 796 tasks/s at 4 workers to 214 at
+64. The p95 claim time at 64 workers is 14.9 seconds.
+
+## Step 1. Locks that skip
+
+`FOR UPDATE SKIP LOCKED` ends the blocking. A worker that meets a locked row
+skips it and reads the next one.
+
+```sql
+... ORDER BY priority, created_at LIMIT 10
+FOR UPDATE SKIP LOCKED;
+```
+
+Throughput rises 50 percent. Retries stay high at 4,853. The isolation level
+still aborts a transaction when another transaction changes a row it read.
+
+## Step 2. Isolation level
+
+`REPEATABLE READ` gives a queue nothing. Each claim is independent, so a
+stable snapshot across statements has no value here. `READ COMMITTED` reads
+fresh rows for each statement instead.
+
+Retries fall from 4,853 to zero. Throughput also stops falling as workers
+arrive. The queue holds 2,062 tasks/s at 4 workers, 2,158 at 16, and 2,121
+at 64. The queue is stable, and still slow.
+
+## Step 3. The claim index
+
+The claim query still reads finished rows. An index on
+`(queue_name, created_at)` holds every row ever inserted, and the query must
+sort what it reads. A partial covering index removes both costs.
+
+```sql
+CREATE INDEX tasks_dequeue_idx
+  ON tasks (queue_name, status, priority, created_at)
+  WHERE status = 'ENQUEUED';
+```
+
+The index holds claimable rows only. It returns them in claim order, so the
+sort disappears. A row leaves the index when it leaves `ENQUEUED`, so
+Postgres stops the index maintenance for it.
+
+Throughput rises 12 times, to 25,783 tasks/s. This is the largest single
+gain in the ladder. It also ends the article's path, at 32 times the naive
+query.
+
+## Step 4. Server CPUs
+
+Twice the CPUs buy 22 percent, not twice the throughput. The podman virtual
+machine went from 4 CPUs to 8. A CPU-bound server would gain far more, so
+something else shares the ceiling.
+
+## Step 5. Commit durability
+
+`synchronous_commit = off` buys 5 percent. The setting lets a commit return
+before the WAL flush reaches the disk. The small gain answers the question
+from step 4. The disk flush is not the wall.
+
+The setting has a cost. A crash loses the last moments of acknowledged work,
+about 0.6 seconds. It never corrupts data and it never loses part of a
+transaction. A lost claim causes a re-run, which an at-least-once queue
+already tolerates. A lost insert is worse, because the producer holds an
+acknowledgement for a task that no longer exists.
+
+## Step 6. Round trips
+
+One statement replaces four messages. The claim was a transaction: `BEGIN`,
+`SELECT ... FOR UPDATE SKIP LOCKED`, `UPDATE`, `COMMIT`. A common table
+expression (CTE) does the same work in one statement.
+
+```sql
+WITH c AS (
+  SELECT id FROM tasks
+  WHERE queue_name = $1 AND status = 'ENQUEUED'
+  ORDER BY priority, created_at LIMIT $2
+  FOR UPDATE SKIP LOCKED
+)
+UPDATE tasks SET status = 'PENDING', started_at = now()
+WHERE id IN (SELECT id FROM c) RETURNING id;
+```
+
+Throughput rises 21 percent. That is four times what the disk flush bought.
+The cost of a claim sits in the statement path, not on the disk.
+
+## Step 7. The container layer
+
+Postgres on the host is 23 percent faster than Postgres in the container.
+Both runs use TCP and the same workload, so the container is the only
+difference. On macOS a container runs inside a virtual machine, and every
+packet crosses a userspace network proxy.
+
+The result agrees with step 6. Round trips set the ceiling, not the disk.
+
+## Step 8. Task duration
+
+A real task takes time. This step gives every task a duration of 5 seconds.
+The row stays in `PENDING` for that time before the worker marks it
+`SUCCESS`, so about 300,000 tasks are in flight at any moment.
+
+Throughput rises 19 percent, to 58,556 tasks/s. A timer goroutine performs
+the completion write, so the worker no longer waits for it. The claim loop
+does less work per task and claims more of them.
+
+A unix domain socket in place of TCP raises this to 60,055 tasks/s. That 3
+percent is close to the spread between repeated runs, so treat it as small.
+
+## Step 9. The queue head
+
+Every step so far shares one bottleneck. The queue has a single head, so all
+workers scan and lock the same few index pages. That is why 32 and 64
+workers were slower than 16.
+
+A `shard` column splits the head. The index leads with the shard, so each
+shard owns a contiguous run of index pages.
+
+```sql
+CREATE INDEX tasks_dequeue_idx
+  ON tasks (queue_name, shard, priority, created_at)
+  WHERE status = 'ENQUEUED';
+```
+
+A producer assigns a random shard. A worker pins to one shard and never
+reads another. The table, the disk, and the WAL stay single. Only the
+contention splits.
+
+With 32 shards and 32 workers the queue reaches 165,700 tasks/s. The p95
+claim time falls to 3.8 ms, below the 4.8 ms of step 8, with twice the
+workers. Order weakens from one queue-wide first-in-first-out (FIFO)
+sequence to one FIFO sequence per shard.
+
+## Where it stops
+
+64 shards are worse than 32, at 158,553 tasks/s. The benchmark marks that
+cell invalid. Each of the 64 heads held too few tasks, and 17 percent of
+claims found an empty shard. The producers set that limit, not the claim
+path.
+
+The final number holds the four rules from the start. The claim batch is
+still 10 tasks, rows are still locked, `PENDING` still exists, and the table
+is still logged.
 
 ## Other engines
 
-CockroachDB (three nodes, podman, replication factor 3) was tried as a
-drop-in alternative. It was not promising on this machine. Throughput was
-two orders of magnitude below Postgres under the same schema and workload,
-and the Postgres-specific `SKIP LOCKED` optimization made it worse instead
-of better. CockroachDB needs its own query and schema design, not the
-Postgres playbook, so it was not pursued further here.
-
-## Workload
-
-The benchmark measures a steady state. Producers enqueue as fast as they can
-and pause above a backlog cap. Workers dequeue in batches in a closed loop. A
-warm-up period runs first. The measurement window then counts completed tasks
-and records dequeue latency. Latency samples include retry time.
-
-A cell is one stage at one worker count. Each cell starts with a fresh table,
-so bloat from one cell cannot reach the next. A cell is marked invalid when the
-backlog almost drained. It is also invalid when more than 5 percent of
-dequeue attempts found nothing to claim.
-
-## Prerequisites
-
-- Bazel through `bazelisk`. The build downloads the Go toolchain itself.
-- `podman`, with a started machine on macOS: `podman machine start`.
-- The `task` CLI, for the automation targets below. The raw `bazel run`
-  commands work without it.
-
-## Run
-
-The bench command starts a throwaway `postgres:18` container with podman and
-runs the selected cells. Each cell writes one JSON result file into
-`scaling-queue-postgres/results/`. The measurement window is 2 minutes per cell, so a
-full run takes about 30 minutes.
-
-```sh
-task scaling-queue-postgres:bench                                   # all stages, workers 4,16,64
-task scaling-queue-postgres:bench -- -stages=0-vanilla              # one stage
-task scaling-queue-postgres:bench -- -repeat=3                       # medians need 3 repeats
-task scaling-queue-postgres:bench -- -dsn=postgres://...             # reuse a running server
-task scaling-queue-postgres:bench -- -stages=6-sharded -shards=32 -workers=32 -hold=5s
-task scaling-queue-postgres:bench:quick                              # 5s smoke run, results not kept
-```
-
-`task scaling-queue-postgres:bench` wraps `bazel run //scaling-queue-postgres/cmd/bench`, which
-accepts the same flags after `--`.
-
-The report command reads the accumulated result files and writes
-`scaling-queue-postgres/results/REPORT.md`. The report shows one table per worker
-count, with a delta column against the previous stage.
-
-```sh
-task scaling-queue-postgres:report
-```
-
-Results from different environments land in separate report sections. The
-report never averages across environments.
-
-## Integration test
-
-The integration test needs a running Postgres. It skips without one, so
-`bazel test //...` stays green everywhere. This target manages the container:
-
-```sh
-task scaling-queue-postgres:test:integration
-```
-
-To run it against your own server:
-
-```sh
-bazel test //scaling-queue-postgres/internal/queue:queue_test \
-  --test_env=PGQUEUE_TEST_DSN=postgres://user:pass@host:5432/db
-```
-
-## Validity
-
-Absolute numbers depend on the host. On macOS, Postgres in a podman
-container runs inside a virtual machine, and its disk, network, and CPU
-limits bound the result. Native Postgres on the host removes that layer.
-Each result file records the image digest or native version, the server
-settings, the hardware, and the exact command for reproduction.
-
-Latency percentiles are closed-loop service times. They do not model
-open-load response times.
+CockroachDB, on three nodes with replication factor 3, was not promising on
+this machine. Throughput stayed two orders of magnitude below Postgres under
+the same schema and workload. `SKIP LOCKED` made it slower, not faster.
+CockroachDB needs its own query and schema design, so this benchmark did not
+pursue it.
