@@ -166,6 +166,9 @@ func runCell(ctx context.Context, ctl *queue.Store, dsn string, st queue.Stage,
 	shards := 1
 	if st.Sharded {
 		shards = cfg.shards
+		if shards == 0 || shards > workers {
+			shards = workers
+		}
 	}
 	res := benchreport.Result{
 		Benchmark:       "scaling-queue-postgres",
@@ -536,16 +539,16 @@ func parseFlags(args []string) (config, error) {
 	workers := fs.String("workers", "16,32", "comma-separated claim-loop counts")
 	cfg := config{}
 	fs.StringVar(&cfg.mode, "mode", "steady", "drain or steady")
-	fs.IntVar(&cfg.completers, "completers", 32, "goroutines that write DONE")
-	fs.IntVar(&cfg.slots, "slots", 900000, "maximum tasks in flight")
-	fs.IntVar(&cfg.shards, "shards", 32, "shard count for the sharded stages")
+	fs.IntVar(&cfg.completers, "completers", 128, "goroutines that write DONE")
+	fs.IntVar(&cfg.slots, "slots", 3_000_000, "maximum tasks in flight")
+	fs.IntVar(&cfg.shards, "shards", 0, "shards for the sharded stages, 0 means one per claim loop")
 	fs.IntVar(&cfg.batch, "batch", 1, "tasks per claim")
 	fs.IntVar(&cfg.createBatch, "create-batch", 1000, "rows per insert")
 	fs.DurationVar(&cfg.durationMin, "duration-min", 10*time.Second, "shortest task duration")
 	fs.DurationVar(&cfg.durationMax, "duration-max", 20*time.Second, "longest task duration")
 	fs.IntVar(&cfg.producers, "producers", 4, "producer goroutines, steady mode only")
-	fs.Int64Var(&cfg.targetBacklog, "target-backlog", 200000, "queue length the controller holds")
-	fs.IntVar(&cfg.prefill, "prefill", 6_000_000, "rows inserted before a drain run")
+	fs.Int64Var(&cfg.targetBacklog, "target-backlog", 1_000_000, "queue length the controller holds")
+	fs.IntVar(&cfg.prefill, "prefill", 26_000_000, "rows inserted before a drain run")
 	fs.DurationVar(&cfg.warmup, "warmup", 60*time.Second, "warm-up before measuring")
 	fs.DurationVar(&cfg.window, "window", 5*time.Minute, "measurement window")
 	fs.IntVar(&cfg.repeat, "repeat", 1, "repeats per stage and worker count")
@@ -586,8 +589,15 @@ func parseFlags(args []string) (config, error) {
 		return cfg, fmt.Errorf("warmup %v must exceed the longest task duration %v",
 			cfg.warmup, cfg.durationMax)
 	}
-	if cfg.shards < 1 {
-		return cfg, fmt.Errorf("shards must be at least 1, got %d", cfg.shards)
+	if cfg.shards < 0 {
+		return cfg, fmt.Errorf("shards cannot be negative, got %d", cfg.shards)
+	}
+	for _, w := range cfg.workers {
+		if cfg.shards > w {
+			return cfg, fmt.Errorf(
+				"%d shards with %d claim loops would leave shards with no worker", cfg.shards, w,
+			)
+		}
 	}
 	if ws := os.Getenv("BUILD_WORKSPACE_DIRECTORY"); ws != "" && !filepath.IsAbs(cfg.resultsDir) {
 		cfg.resultsDir = filepath.Join(ws, cfg.resultsDir)
