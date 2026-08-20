@@ -76,6 +76,8 @@ passes before it reports a number, and what those checks found.
 | 4. `synchronous_commit = off` | 14,854 | 1.05x | 16 | 1.9 ms | this benchmark |
 | 5. One statement per claim | 16,296 | 1.10x | 16 | 1.9 ms | this benchmark |
 | 6. Shard the queue head | 34,194 | 2.10x | 64 | 6.5 ms | this benchmark |
+| Step 6, in a VM with 8 CPUs | | | 64 | | this benchmark |
+| Step 6, in a VM with 4 CPUs | | | 64 | | this benchmark |
 
 The article's path gives 1030x. The steps past it give another 2.4x. The
 whole ladder is 2,550x.
@@ -89,7 +91,13 @@ whole ladder is 2,550x.
   4 async commit   ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░      14,854   19 hours
   5 one statement  ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     16,296   17 hours
   6 sharded        ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  34,194    8 hours
+  same, VM 8 CPUs  ║                                          —          —
+  same, VM 4 CPUs  ║                                          —          —
 ```
+
+The last two rows hold step 6 fixed and change only where Postgres runs.
+The cost of the container then stands apart from the cost of the claim
+path. Those rows are still measuring.
 
 The last column divides one billion by the measured rate. It is arithmetic,
 not a forecast. A queue that ran for hours would carry far more dead rows
@@ -141,25 +149,3 @@ splits that head, and the shape changes.
 
 The sweep runs past the peak and comes back down, so the peak does not sit
 at the edge of the range.
-
-## Where Postgres runs
-
-**This run is in progress.** The container rows are still measuring.
-
-Every number above comes from Postgres on the host. The rows below run the
-sharded stage at 64 claim loops in three places. The cost of the container,
-and the cost of the CPU count it runs with, then stand apart from the cost
-of the claim path.
-
-| Environment | tasks/s | Gain | 1B tasks |
-| --- | ---: | ---: | ---: |
-| podman VM, 4 CPUs | | | |
-| podman VM, 8 CPUs | | | |
-| Native, no VM | 34,194 | — | 8 hours |
-
-```
-                    log scale, three marks per doubling           1B tasks
-  4 CPUs, in a VM  ║                                          —          —
-  8 CPUs, in a VM  ║                                          —          —
-  metal            ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  34,194    8 hours
-```
