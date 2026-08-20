@@ -11,6 +11,15 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# podman reads ~/.docker/config.json and asks a credential helper even for a
+# local image from a registry that helper does not serve. A run four hours in
+# died when the helper could not refresh its token without a prompt. The image
+# is local and needs no credentials, so point podman at an empty auth file.
+AUTH_DIR=${AUTH_DIR:-/private/tmp/scaling-queue-postgres-auth}
+mkdir -p "$AUTH_DIR"
+printf '{"auths":{}}' >"$AUTH_DIR/auth.json"
+export REGISTRY_AUTH_FILE="$AUTH_DIR/auth.json"
+
 PGDATA=${PGDATA_DIR:-/private/tmp/scaling-queue-postgres-pgdata}
 PGBIN=${PGBIN:-/opt/homebrew/opt/postgresql@18/bin}
 NATIVE_PORT=${NATIVE_PORT:-55444}
