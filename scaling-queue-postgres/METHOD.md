@@ -146,53 +146,6 @@ charting them.
 - **The backlog** must survive the window. A drained queue ends the
   measurement early.
 
-## What the checks found in the reported run
-
-Every stage held its queue steady. The queue started at 1,000,000 tasks and
-ended between 1,001,651 and 1,095,287, in every stage. Tasks in flight
-matched throughput times mean task duration within 3.1 percent everywhere.
-
-The `drain` mode reaches the same answer by a different route. It fills the
-queue and then consumes it, with no producer and no controller running. It
-agrees with the reported numbers within 4 to 16 percent on every stage.
-Neither the producer load nor the controller shapes the result.
-
-The checks are not decoration. They caught eight faults during development,
-each of which would have reported a number that looked reasonable:
-
-- Shards with no worker pinned to them, so half the tasks were never
-  claimable. The stage reported 5,024 tasks per second instead of 48,059.
-- A completer pool that saturated, so tasks in flight grew without bound.
-- A target queue too small for the controller to steer.
-- An insert rate floor that outran a slow stage and grew its queue forever.
-- A producer that read a rate limiter refusal as a reason to stop. Every
-  producer exited and the cell reported 0 tasks per second.
-- A worker sweep that stopped before the peak, so the best worker count sat
-  at the edge of the range.
-- A cell with a handful of completions that passed as valid.
-- A drain prefill so large that the slow stages became unmeasurable.
-
-## Window length
-
-The same stages measured over a 30 second window read far higher.
-
-| Stage | 30 seconds | 5 minutes | Overstatement |
-| --- | ---: | ---: | ---: |
-| 5. one statement | 23,501 | 16,296 | 44 percent |
-| 6. sharded | 61,338 | 34,194 | 79 percent |
-
-At 34,000 tasks per second a 5 minute window moves 10 million tasks, and
-each task writes three row versions. The table carries 30 million row
-versions by the end, autovacuum runs hard, and the index grows. A 30 second
-window finishes before any of that starts.
-
-The short numbers are not wrong. They measure a queue that has just started.
-The 5 minute numbers measure a queue that has been running.
-
-The best worker count moves too. Over 30 seconds the sharded stage looked
-fastest at 128 claim loops. Over 5 minutes 64 wins, and 128 is 20 percent
-slower.
-
 ## Sizing a drain run
 
 A drain run consumes its prefill and never refills. The prefill must exceed
@@ -240,8 +193,8 @@ records the server version, the settings, the hardware, the git commit, and
 the exact command. `results/sweep.jsonl` holds the 30 second sweeps that
 locate each stage's best worker count.
 
-Repeated runs of the same cell vary by about 2 percent. A difference under
-4 percent is not a difference.
+[The experiment plan](../docs/design/scaling-queue-postgres-experiment.md)
+fixes the steps, the environments, and the tables before the run starts.
 
 Latency percentiles are closed-loop service times. The claim loops are the
 system under test, so these numbers do not model open-load response times.
