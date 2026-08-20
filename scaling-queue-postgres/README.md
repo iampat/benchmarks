@@ -167,10 +167,23 @@ often the one the next worker holds.
 
 The claim runs at `READ COMMITTED` instead of `REPEATABLE READ`.
 
-Each claim is independent, so a queue gains nothing from a stable snapshot
-across statements. `REPEATABLE READ` aborts a transaction that read a row
-another transaction changed. `READ COMMITTED` reads fresh rows for each
-statement, and those aborts stop.
+The article makes this choice conditional, and the condition matters. A queue
+that enforces a global limit, such as "run at most N tasks across all
+workers", keeps `REPEATABLE READ`, because counting what every worker holds
+needs one consistent view. A queue without such a limit takes `READ
+COMMITTED`. This benchmark enforces no limit, so the two steps above carry
+`REPEATABLE READ` only to start where the article starts.
+
+The cost it removes is real. `REPEATABLE READ` aborts a transaction that read
+a row another transaction changed, and the worker claims again. Retries fall
+to zero: from 69,494 in the operations benchmark, and from 288 in the task
+queue.
+
+The gain follows the claim rate. The operations benchmark claims often enough
+for those aborts to bind, and gains 63 percent. It also stops losing ground
+as claim loops arrive. It holds 476, 474, and 474 at 4, 8, and 16 loops,
+where the step above falls from 293 to 156. The task queue claims 7 times a
+second, which is too slow for aborts to matter, and it gains nothing.
 
 ### 3. Partial covering index
 
