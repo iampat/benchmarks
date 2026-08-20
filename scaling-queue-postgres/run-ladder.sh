@@ -84,8 +84,11 @@ for mode in $MODES; do
 		esac
 
 		say "$mode, step $step, claim loops $workers"
+		# bash 3.2 ships on macOS, where an empty array under set -u is an
+		# error. The ${x[@]+...} form expands to nothing when the array is empty.
 		bazel run //scaling-queue-postgres/cmd/bench -- \
-			-mode="$mode" -step="$step" -workers="$workers" -skip-recorded "${dsn[@]}" "$@"
+			-mode="$mode" -step="$step" -workers="$workers" -skip-recorded \
+			${dsn[@]+"${dsn[@]}"} "$@"
 		eta
 	done
 	native_down
