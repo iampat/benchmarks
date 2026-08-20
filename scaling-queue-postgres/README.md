@@ -61,15 +61,15 @@ passes before it reports a number, and what those checks found.
 
 ## Results
 
-| Step | tasks/s | Gain | Workers | Claim p95 | Retries | From |
-| --- | ---: | ---: | ---: | ---: | ---: | --- |
-| 0. Naive claim query | 13.4 | — | 8 | 668 ms | 202 | article |
-| 1. `SKIP LOCKED` | 14.0 | none | 8 | 658 ms | 226 | article |
-| 2. `READ COMMITTED` | 13.7 | none | 16 | 1,279 ms | 0 | article |
-| 3. Partial covering index | 14,112 | 1030x | 16 | 1.9 ms | 0 | article |
-| 4. `synchronous_commit = off` | 14,854 | 1.05x | 16 | 1.9 ms | 0 | this benchmark |
-| 5. One statement per claim | 16,296 | 1.10x | 16 | 1.9 ms | 0 | this benchmark |
-| 6. Shard the queue head | 34,194 | 2.10x | 64 | 6.5 ms | 0 | this benchmark |
+| Step | tasks/s | Gain | Workers | Claim p95 | From |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 0. Naive claim query | 13.4 | — | 8 | 668 ms | article |
+| 1. `SKIP LOCKED` | 14.0 | none | 8 | 658 ms | article |
+| 2. `READ COMMITTED` | 13.7 | none | 16 | 1,279 ms | article |
+| 3. Partial covering index | 14,112 | 1030x | 16 | 1.9 ms | article |
+| 4. `synchronous_commit = off` | 14,854 | 1.05x | 16 | 1.9 ms | this benchmark |
+| 5. One statement per claim | 16,296 | 1.10x | 16 | 1.9 ms | this benchmark |
+| 6. Shard the queue head | 34,194 | 2.10x | 64 | 6.5 ms | this benchmark |
 
 The article's path gives 1030x. The steps past it give another 2.4x. The
 whole ladder is 2,550x.
