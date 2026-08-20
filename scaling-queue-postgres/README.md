@@ -47,36 +47,7 @@ makes each claim slower still.
 The last step claims as fast as it inserts. Its queue stays near empty, at
 1,655 rows, and the claim loops poll an empty queue 2.5 million times.
 
-## Loops on each side
-
-The number of loops changes the result more than most stages do. The rows
-below use the last step.
-
-| Loops each side | operations/s | Gain | enqueue/s | dequeue/s | Claim p95 | Empty claims | Mean queue |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 16 | 84,010 | — | 42,005 | 42,005 | 0.24 ms | 2,541,607 | 1,655 |
-| 32 | 79,523 | -5% | 39,761 | 39,761 | 0.18 ms | 7,139,251 | 186 |
-| 64 | 53,233 | -33% | 26,616 | 26,616 | 0.35 ms | 14,460,580 | 17 |
-| 128 | 24,036 | -55% | 12,018 | 12,018 | 0.68 ms | 26,694,454 | 10 |
-
-```
-                    operations per second
-  16 + 16       ║████████████████████████████████████   84,010
-  32 + 32       ║██████████████████████████████████     79,523
-  64 + 64       ║███████████████████████                53,233
-  128 + 128     ║██████████                             24,036
-```
-
-The enqueue and dequeue rates are equal in every row, because a claim cannot
-take a row that no insert has written. Dequeue is the faster side, so the
-insert side sets the pace.
-
-Mean queue length falls from 1,655 to 10 as the groups grow. The claim loops
-then poll an empty queue, 2.5 million times at 16 loops each and 26.7
-million at 128. Those polls are statements too, and they compete with the
-inserts they wait for. Adding loops past 16 costs throughput.
-
-## A task costs less than a queue operation
+## Cost per item
 
 The task queue moves nearly as many items per second as the bare queue,
 while doing more with each one.
@@ -169,7 +140,7 @@ maintaining an entry for it.
 Each task pays this cost once, because a claim takes one task. That is why
 the index matters more here than it did at a batch of 10 tasks.
 
-## Sharding is the largest gain past the article
+## Sharding the queue head
 
 Stages 4 and 5 buy 5 and 10 percent. Sharding the queue head buys 110
 percent, and batching the completions buys another 14 percent.
@@ -195,7 +166,7 @@ splits that head, and the shape changes.
 Both sweeps run past their peak and come back down, so neither peak sits at
 the edge of the range.
 
-## A short run overstates the result
+## Window length
 
 The same stages measured over a 30 second window read far higher.
 

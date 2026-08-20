@@ -49,6 +49,23 @@ rates apart and together, and samples the queue length every 10 seconds.
 The queue starts empty and finds its own length, so that length shows which
 side of the queue is faster.
 
+## Loops in the operations mode
+
+The operations mode peaks at 16 loops on each side. The rows below use the
+last stage, over 5 minute windows.
+
+| Loops each side | operations/s | Gain | enqueue/s | dequeue/s | Claim p95 | Empty claims | Mean queue |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 16 | 84,010 | — | 42,005 | 42,005 | 0.24 ms | 2,541,607 | 1,655 |
+| 32 | 79,523 | -5% | 39,761 | 39,761 | 0.18 ms | 7,139,251 | 186 |
+| 64 | 53,233 | -33% | 26,616 | 26,616 | 0.35 ms | 14,460,580 | 17 |
+| 128 | 24,036 | -55% | 12,018 | 12,018 | 0.68 ms | 26,694,454 | 10 |
+
+Dequeue is the faster side, so the queue stays near empty and the claim
+loops poll it. Empty claims rise from 2.5 million to 26.7 million as the
+groups grow. Those polls are statements too, and they compete with the
+inserts they wait for. Adding loops past 16 costs throughput.
+
 ## Stages
 
 A stage is a named configuration of the claim path. All stages share one Go
