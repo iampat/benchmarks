@@ -81,14 +81,14 @@ The article's path gives 1030x. The steps past it give another 2.4x. The
 whole ladder is 2,550x.
 
 ```
-                  log scale, three marks per doubling    1B tasks
-  0 vanilla         ║░                                    13   2.4 years
-  1 SKIP LOCKED     ║░                                    14   2.3 years
-  2 READ COMMITTED  ║░                                    13   2.3 years
-  3 partial index   ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  14,112    20 hours
-  4 async commit    ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  14,854    19 hours
-  5 one statement   ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 16,296    17 hours
-  6 sharded         ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 34,194    8 hours
+                    log scale, three marks per doubling           1B tasks
+  0 vanilla        ║░                                        13  2.4 years
+  1 SKIP LOCKED    ║░                                        14  2.3 years
+  2 READ COMMITTED ║░                                        13  2.3 years
+  3 partial index  ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░      14,112   20 hours
+  4 async commit   ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░      14,854   19 hours
+  5 one statement  ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     16,296   17 hours
+  6 sharded        ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  34,194    8 hours
 ```
 
 The last column divides one billion by the measured rate. It is arithmetic,
