@@ -24,6 +24,12 @@ STEPS=${STEPS:-"0 1 2 3 4 5 6 7 8 9"}
 WORKERS_SMALL=${WORKERS_SMALL:-"4,8,16"}
 WORKERS_LARGE=${WORKERS_LARGE:-"16,32,64"}
 
+# The first steps cannot claim as fast as an unlimited enqueue loop inserts, so
+# their queue runs away and the claim path is measured against millions of rows
+# it will never reach. Those steps hold the queue at a set length instead. The
+# faster steps keep up on their own and need no limit.
+OPS_QUEUE_TARGET=${OPS_QUEUE_TARGET:-10000}
+
 total=0
 for _ in $MODES; do for _ in $STEPS; do total=$((total + 1)); done; done
 done_cells=0
@@ -71,6 +77,11 @@ for mode in $MODES; do
 		workers=$WORKERS_LARGE
 		[ "$step" -le 2 ] && workers=$WORKERS_SMALL
 
+		extra=()
+		if [ "$mode" = ops ] && [ "$step" -le 2 ]; then
+			extra=(-ops-queue-target="$OPS_QUEUE_TARGET")
+		fi
+
 		dsn=()
 		case "$step" in
 		0 | 1 | 2 | 3 | 4 | 5 | 6) vm_cpus 2 ;;
@@ -88,7 +99,7 @@ for mode in $MODES; do
 		# error. The ${x[@]+...} form expands to nothing when the array is empty.
 		bazel run //scaling-queue-postgres/cmd/bench -- \
 			-mode="$mode" -step="$step" -workers="$workers" -skip-recorded \
-			${dsn[@]+"${dsn[@]}"} "$@"
+			${dsn[@]+"${dsn[@]}"} ${extra[@]+"${extra[@]}"} "$@"
 		eta
 	done
 	native_down

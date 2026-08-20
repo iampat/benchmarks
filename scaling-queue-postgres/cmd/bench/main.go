@@ -220,9 +220,15 @@ func runCell(ctx context.Context, ctl *queue.Store, dsn string, st queue.Stage,
 		return res, err
 	}
 
+	// A run starts at the queue length it means to hold. Drain fills a backlog
+	// it will consume, steady starts at its target, and ops starts empty unless
+	// it holds the queue at a target.
 	prefill := cfg.Prefill
-	if cfg.Mode == "steady" {
+	switch cfg.Mode {
+	case "steady":
 		prefill = int(cfg.TargetBacklog)
+	case "ops":
+		prefill = cfg.OpsQueueTarget
 	}
 	if err := fill(ctx, ctl, prefill, cfg.CreateBatch, shards); err != nil {
 		return res, err
