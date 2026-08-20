@@ -37,6 +37,16 @@ started=$(date +%s)
 
 say() { printf '\n=== %s\n' "$*"; }
 
+# Pull once, up front. The run itself never contacts a registry, so a
+# credential helper cannot fail a cell hours later.
+ensure_image() {
+	local image=${IMAGE:-docker.io/library/postgres:18}
+	if ! podman image exists "$image"; then
+		say "pulling $image"
+		podman pull "$image" >/dev/null
+	fi
+}
+
 eta() {
 	done_cells=$((done_cells + 1))
 	local elapsed=$(($(date +%s) - started))
@@ -57,6 +67,7 @@ vm_cpus() {
 	podman machine stop >/dev/null 2>&1 || true
 	podman machine set --cpus "$1" >/dev/null
 	podman machine start >/dev/null
+	ensure_image
 }
 
 native_up() {

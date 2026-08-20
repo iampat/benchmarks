@@ -21,8 +21,11 @@ type Config struct {
 }
 
 func (c Config) RunArgs() []string {
+	// The image is pulled once, before the run. Never consulting a registry
+	// keeps a credential helper out of the loop, which otherwise fails a long
+	// run when its token expires.
 	return []string{
-		"run", "-d", "--rm",
+		"run", "-d", "--rm", "--pull=never",
 		"--name", c.Name,
 		"-p", fmt.Sprintf("127.0.0.1:%d:5432", c.Port),
 		"-e", "POSTGRES_PASSWORD=" + c.Password,

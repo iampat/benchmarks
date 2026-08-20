@@ -16,7 +16,7 @@ func TestRunArgs(t *testing.T) {
 		MaxConnections: 200,
 	}
 	want := []string{
-		"run", "-d", "--rm",
+		"run", "-d", "--rm", "--pull=never",
 		"--name", "scaling-queue-postgres-bench",
 		"-p", "127.0.0.1:55432:5432",
 		"-e", "POSTGRES_PASSWORD=secret",
