@@ -121,26 +121,11 @@ whole ladder is 2,900x.
   7 batched completion ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  38,904
 ```
 
-## The first two fixes buy nothing here
+## The partial covering index
 
-Stages 0, 1, and 2 measure 13.4, 14.0, and 13.7 tasks per second. Those
-three numbers sit inside the 2 percent that repeated runs vary by, so they
-are one number. The article's first two optimizations bought 50 percent and
-80 percent when a claim took 10 tasks. At one task per claim they buy
-nothing.
-
-The reason is `LIMIT 1`. Every worker asks for the single oldest row, so
-`SKIP LOCKED` only moves a worker onto the row that the next worker already
-holds. Skipping needs somewhere to skip to.
-
-`READ COMMITTED` still does something real. It removes every retry, 226 of
-them. It does not make the queue faster.
-
-## The index carries the article's whole gain
-
-The partial covering index takes the queue from 13.7 to 14,112 tasks per
-second, a factor of 1,030. Claim time falls from 1.3 seconds to 1.9
-milliseconds.
+The partial covering index accounts for the largest improvement in the
+ladder. It takes the queue from 13.7 to 14,112 tasks per second, and claim
+time falls from 1.3 seconds to 1.9 milliseconds.
 
 ```sql
 CREATE INDEX tasks_claim_idx
@@ -148,10 +133,13 @@ CREATE INDEX tasks_claim_idx
   WHERE status = 'CREATED';
 ```
 
-The index holds claimable rows only, and returns them in claim order. The
-claim query stops reading finished rows and stops sorting. At one task per
-claim every task pays that scan, so removing it matters more here than it
-did at a batch of 10.
+The index holds claimable rows only, and it returns them in claim order. The
+claim query no longer reads finished rows, and it no longer sorts. A row
+also leaves the index once it leaves `CREATED`, so Postgres stops
+maintaining an entry for it.
+
+Each task pays this cost once, because a claim takes one task. That is why
+the index matters more here than it did at a batch of 10 tasks.
 
 ## Sharding is the largest gain past the article
 
