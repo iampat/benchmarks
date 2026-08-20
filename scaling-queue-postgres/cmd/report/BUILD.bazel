@@ -5,7 +5,11 @@ go_library(
     srcs = ["main.go"],
     importpath = "github.com/iampat/benchmarks/scaling-queue-postgres/cmd/report",
     visibility = ["//visibility:private"],
-    deps = ["//scaling-queue-postgres/internal/benchreport"],
+    deps = [
+        "//scaling-queue-postgres/internal/benchcfg",
+        "//scaling-queue-postgres/internal/benchreport",
+        "//scaling-queue-postgres/internal/experiment",
+    ],
 )
 
 go_binary(

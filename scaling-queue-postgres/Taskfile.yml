@@ -23,12 +23,27 @@ tasks:
     desc: Queue operations alone. One group enqueues, another claims, one row each.
     cmds:
       - bazel run //scaling-queue-postgres/cmd/bench -- -mode=ops
-        -stages=7-batched-completion -prefill=0 -warmup=15s {{.CLI_ARGS}}
+        -step=6 -prefill=0 -warmup=15s {{.CLI_ARGS}}
 
   report:
     desc: Build scaling-queue-postgres/results/REPORT.md from the recorded results.
     cmds:
       - bazel run //scaling-queue-postgres/cmd/report -- {{.CLI_ARGS}}
+
+  docs:
+    desc: Write the measured numbers into README.md and METHOD.md.
+    cmds:
+      - bazel run //scaling-queue-postgres/cmd/report
+
+  docs:check:
+    desc: Fail when a document no longer matches the recorded results.
+    cmds:
+      - bazel run //scaling-queue-postgres/cmd/report -- -check
+
+  ladder:
+    desc: Run the whole experiment, ten steps for each benchmark. Resumes if stopped.
+    cmds:
+      - ./scaling-queue-postgres/run-ladder.sh {{.CLI_ARGS}}
 
   test:integration:
     desc: Run the queue integration test against a throwaway container.

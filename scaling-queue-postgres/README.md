@@ -25,6 +25,7 @@ Ten steps. Each keeps every change of the step above it. Steps 0 to 6 change
 the queue and run on a virtual machine with 2 CPUs. Steps 7 to 9 change
 nothing but the machine, so the queue design and the hardware are separate.
 
+<!-- begin:generated:steps-table -->
 | Step | Change | Source |
 | --- | --- | --- |
 | 0. Naive claim query | `FOR UPDATE`, `REPEATABLE READ`, btree on `(queue_name, created_at)` | article |
@@ -37,6 +38,7 @@ nothing but the machine, so the queue design and the hardware are separate.
 | 7. Twice the CPUs | The virtual machine goes from 2 CPUs to 4 | ours |
 | 8. Twice the CPUs again | The virtual machine goes from 4 CPUs to 8 | ours |
 | 9. Leave the virtual machine | Postgres runs on the host, with no container | ours |
+<!-- end:generated:steps-table -->
 
 
 ## Queue operations
@@ -47,6 +49,7 @@ sits in flight, so a claim is the whole operation.
 
 The rate counts operations, which is one enqueue and one claim.
 
+<!-- begin:generated:ops-table -->
 | Step | rate | Gain | 1B tasks |
 | --- | ---: | ---: | ---: |
 | 0. Naive claim query | | | |
@@ -59,20 +62,23 @@ The rate counts operations, which is one enqueue and one claim.
 | 7. Twice the CPUs | | | |
 | 8. Twice the CPUs again | | | |
 | 9. Leave the virtual machine | | | |
+<!-- end:generated:ops-table -->
 
+<!-- begin:generated:ops-chart -->
 ```
-                    log scale, three marks per doubling           1B tasks
-  0 vanilla        ║                                          —          —
-  1 SKIP LOCKED    ║                                          —          —
-  2 READ COMMITTED ║                                          —          —
-  3 partial index  ║                                          —          —
-  4 async commit   ║                                          —          —
-  5 one statement  ║                                          —          —
-  6 sharded        ║                                          —          —
-  7 VM, 4 CPUs     ║                                          —          —
-  8 VM, 8 CPUs     ║                                          —          —
-  9 metal          ║                                          —          —
+                   log scale, three marks per doubling1B tasks
+  0 vanilla       ║       —         —
+  1 SKIP LOCKED   ║       —         —
+  2 READ COMMITTED║       —         —
+  3 partial index ║       —         —
+  4 async commit  ║       —         —
+  5 one statement ║       —         —
+  6 sharded       ║       —         —
+  7 VM, 4 CPUs    ║       —         —
+  8 VM, 8 CPUs    ║       —         —
+  9 metal         ║       —         —
 ```
+<!-- end:generated:ops-chart -->
 
 ## The task queue
 
@@ -83,6 +89,7 @@ connection while it runs.
 
 The rate counts tasks.
 
+<!-- begin:generated:task-table -->
 | Step | rate | Gain | 1B tasks |
 | --- | ---: | ---: | ---: |
 | 0. Naive claim query | | | |
@@ -95,20 +102,23 @@ The rate counts tasks.
 | 7. Twice the CPUs | | | |
 | 8. Twice the CPUs again | | | |
 | 9. Leave the virtual machine | | | |
+<!-- end:generated:task-table -->
 
+<!-- begin:generated:task-chart -->
 ```
-                    log scale, three marks per doubling           1B tasks
-  0 vanilla        ║                                          —          —
-  1 SKIP LOCKED    ║                                          —          —
-  2 READ COMMITTED ║                                          —          —
-  3 partial index  ║                                          —          —
-  4 async commit   ║                                          —          —
-  5 one statement  ║                                          —          —
-  6 sharded        ║                                          —          —
-  7 VM, 4 CPUs     ║                                          —          —
-  8 VM, 8 CPUs     ║                                          —          —
-  9 metal          ║                                          —          —
+                   log scale, three marks per doubling1B tasks
+  0 vanilla       ║       —         —
+  1 SKIP LOCKED   ║       —         —
+  2 READ COMMITTED║       —         —
+  3 partial index ║       —         —
+  4 async commit  ║       —         —
+  5 one statement ║       —         —
+  6 sharded       ║       —         —
+  7 VM, 4 CPUs    ║       —         —
+  8 VM, 8 CPUs    ║       —         —
+  9 metal         ║       —         —
 ```
+<!-- end:generated:task-chart -->
 
 The last column of each chart divides one billion by the measured rate. It
 is arithmetic, not a forecast. A queue that ran for hours would carry far

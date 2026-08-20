@@ -13,7 +13,9 @@ import (
 type Result struct {
 	Benchmark string `json:"benchmark"`
 	Mode      string `json:"mode"`
+	Step      int    `json:"step"`
 	Stage     string `json:"stage"`
+	EnvName   string `json:"env_name"`
 
 	Workers         int     `json:"workers"`
 	Completers      int     `json:"completers"`
@@ -70,6 +72,7 @@ type Environment struct {
 	GOARCH         string            `json:"goarch"`
 	NumCPU         int               `json:"num_cpu"`
 	VMCPUs         int               `json:"vm_cpus,omitempty"`
+	StepEnv        string            `json:"step_env,omitempty"`
 	GitCommit      string            `json:"git_commit,omitempty"`
 }
 

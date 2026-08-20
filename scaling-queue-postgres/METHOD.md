@@ -98,25 +98,37 @@ task scaling-queue-postgres:report                        # build results/REPORT
 
 ## Flags that shape a run
 
+<!-- begin:generated:flags-table -->
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `-mode` | steady | `steady`, `drain`, or `ops` |
-| `-stages` | all | Which stages to run |
-| `-workers` | 16,32 | Claim loops to sweep |
-| `-completers` | 128 | Goroutines that write DONE |
-| `-shards` | 0 | Shards for the sharded stages, 0 means one per claim loop |
-| `-slots` | 3000000 | Maximum tasks in flight |
-| `-batch` | 1 | Tasks per claim |
-| `-create-batch` | 1000 | Rows per insert |
-| `-duration-min` | 10s | Shortest task duration |
-| `-duration-max` | 20s | Longest task duration |
-| `-target-backlog` | 1000000 | Queue length the controller holds |
-| `-prefill` | 2000000 | Rows inserted before a drain run |
-| `-warmup` | 60s | Discarded time before the window |
-| `-window` | 5m | Measurement window |
-| `-producers` | 4 | Producer goroutines, steady mode only |
-| `-enqueuers` | 16 | Enqueue loops, ops mode only |
-| `-queue-sample` | 10s | Queue length sampling interval, ops mode |
+| `-batch` | `1` | tasks per claim |
+| `-completers` | `128` | goroutines that write DONE |
+| `-create-batch` | `1000` | rows per insert |
+| `-dsn` | `none` | use this Postgres instead of a managed container |
+| `-duration-max` | `20s` | longest task duration |
+| `-duration-min` | `10s` | shortest task duration |
+| `-enqueuers` | `16` | enqueue loops, ops mode only |
+| `-image` | `docker.io/library/postgres:18` | container image |
+| `-keep-container` | `false` | do not stop the managed container |
+| `-max-connections` | `400` | max_connections for the managed container |
+| `-mode` | `steady` | drain or steady |
+| `-ops-queue-target` | `0` | hold the queue at this length in ops mode, 0 enqueues without a limit |
+| `-port` | `55432` | host port for the managed container |
+| `-prefill` | `2000000` | rows inserted before a drain run |
+| `-producers` | `4` | producer goroutines, steady mode only |
+| `-queue-sample` | `10s` | queue length sampling interval, ops mode |
+| `-repeat` | `1` | repeats per stage and worker count |
+| `-results-dir` | `scaling-queue-postgres/results` | where result JSON files land |
+| `-shards` | `0` | shards for the sharded stages, 0 means one per claim loop |
+| `-skip-recorded` | `false` | skip a step that already has a valid result, so a run resumes |
+| `-slots` | `3000000` | maximum tasks in flight |
+| `-stages` | `all` | comma-separated stage names, or all |
+| `-step` | `-1` | run one numbered step of the experiment, -1 uses -stages |
+| `-target-backlog` | `1000000` | queue length the controller holds |
+| `-warmup` | `1m0s` | warm-up before measuring |
+| `-window` | `5m0s` | measurement window |
+| `-workers` | `16,32` | comma-separated claim-loop counts |
+<!-- end:generated:flags-table -->
 
 The warm-up must exceed the longest task duration, and the command refuses
 to start otherwise. Tasks in flight need one full task duration to reach a
@@ -133,7 +145,8 @@ charting them.
   error on a count falls off as 1/sqrt(N), so 1000 holds it near 3 percent.
   Below that a cell cannot measure a rate.
 - **Little's Law.** Tasks in flight must equal throughput times mean task
-  duration, within 10 percent. A run that misses it was still filling or
+  duration. The tolerance is 10 percent, or `400/sqrt(expected)` when that is
+  wider, because counting noise on a small number of tasks is larger. A run that misses it was still filling or
   draining its pipeline, whatever its throughput says. This is the strongest
   check the harness has, because it fails for any error in the task
   lifetime, the counters, or the window boundaries.
@@ -152,11 +165,10 @@ A drain run consumes its prefill and never refills. The prefill must exceed
 the rate times the warm-up plus the window. It must also leave the queue
 deep enough that the claim cost does not change while the window runs.
 
-One prefill cannot serve a stage claiming 13 tasks per second and one
-claiming 39,000. Each stage group gets a prefill sized from its measured
-rate. Stages 0 to 2 get 1 million rows, stages 3 to 5 get 8 million, and
-stages 6 and 7 get 24 million. Every group starts from the same queue depth
-of 1 million, and the rest is fuel.
+One prefill cannot serve a slow stage and a fast one, because the fast stage
+consumes far more rows in the same window. Each stage group takes a prefill
+sized from the rate it reaches, and every group starts from the same queue
+depth. The rest is fuel.
 
 Drain numbers compare inside a group. The `steady` benchmark holds the same
 1 million queue in every stage, so it is the comparison across stages.
@@ -190,8 +202,7 @@ Compare stages inside one environment section, never across two.
 
 Results append one line per cell to `results/results.jsonl`. Each line
 records the server version, the settings, the hardware, the git commit, and
-the exact command. `results/sweep.jsonl` holds the 30 second sweeps that
-locate each stage's best worker count.
+the exact command.
 
 [The experiment plan](../docs/design/scaling-queue-postgres-experiment.md)
 fixes the steps, the environments, and the tables before the run starts.

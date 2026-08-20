@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"log/slog"
 	"math"
@@ -20,7 +19,9 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"github.com/iampat/benchmarks/scaling-queue-postgres/internal/benchcfg"
 	"github.com/iampat/benchmarks/scaling-queue-postgres/internal/benchreport"
+	"github.com/iampat/benchmarks/scaling-queue-postgres/internal/experiment"
 	"github.com/iampat/benchmarks/scaling-queue-postgres/internal/pgcontainer"
 	"github.com/iampat/benchmarks/scaling-queue-postgres/internal/queue"
 )
@@ -28,31 +29,31 @@ import (
 const queueName = "bench"
 
 type config struct {
-	mode           string
-	stages         []queue.Stage
-	workers        []int
-	completers     int
-	enqueuers      int
-	opsQueueTarget int
-	queueSample    time.Duration
-	slots          int
-	shards         int
-	batch          int
-	createBatch    int
-	durationMin    time.Duration
-	durationMax    time.Duration
-	producers      int
-	targetBacklog  int64
-	prefill        int
-	warmup         time.Duration
-	window         time.Duration
-	repeat         int
-	dsn            string
-	image          string
-	port           int
-	keep           bool
-	resultsDir     string
-	maxConnections int
+	Mode           string
+	Stages         []queue.Stage
+	Workers        []int
+	Completers     int
+	Enqueuers      int
+	OpsQueueTarget int
+	QueueSample    time.Duration
+	Slots          int
+	Shards         int
+	Batch          int
+	CreateBatch    int
+	DurationMin    time.Duration
+	DurationMax    time.Duration
+	Producers      int
+	TargetBacklog  int64
+	Prefill        int
+	Warmup         time.Duration
+	Window         time.Duration
+	Repeat         int
+	DSN            string
+	Image          string
+	Port           int
+	Keep           bool
+	ResultsDir     string
+	MaxConnections int
 }
 
 func main() {
@@ -63,14 +64,35 @@ func main() {
 }
 
 func run() error {
-	cfg, err := parseFlags(os.Args[1:])
+	cfg, err := benchcfg.Parse(os.Args[1:])
 	if err != nil {
 		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// A cell must not claim a machine it did not run on. Check before anything
+	// starts, so a failed reconfiguration costs a second and not six minutes.
+	var step experiment.Step
+	if cfg.Step >= 0 {
+		step, _ = experiment.ByN(cfg.Step)
+		managed := cfg.DSN == ""
+		observed := 0
+		if managed {
+			observed = pgcontainer.MachineCPUs(ctx)
+		}
+		if err := step.VerifyEnv(observed, managed); err != nil {
+			return err
+		}
+		if cfg.SkipRecorded && recorded(cfg.ResultsDir, cfg.Mode, step.N) {
+			slog.Info("skipping a step that already has a valid result",
+				"mode", cfg.Mode, "step", step.N)
+			return nil
+		}
+	}
+
 	env := benchreport.Environment{
+		StepEnv:   step.Env.Name,
 		Argv:      os.Args,
 		GOOS:      runtime.GOOS,
 		GOARCH:    runtime.GOARCH,
@@ -78,19 +100,19 @@ func run() error {
 		GitCommit: gitCommit(),
 	}
 
-	dsn := cfg.dsn
+	dsn := cfg.DSN
 	if dsn == "" {
 		ctr, err := pgcontainer.Start(ctx, pgcontainer.Config{
-			Image:          cfg.image,
-			Name:           fmt.Sprintf("scaling-queue-postgres-bench-%d", cfg.port),
-			Port:           cfg.port,
+			Image:          cfg.Image,
+			Name:           fmt.Sprintf("scaling-queue-postgres-bench-%d", cfg.Port),
+			Port:           cfg.Port,
 			Password:       "bench",
-			MaxConnections: cfg.maxConnections,
+			MaxConnections: cfg.MaxConnections,
 		})
 		if err != nil {
 			return err
 		}
-		if cfg.keep {
+		if cfg.Keep {
 			slog.Info("keeping container", "name", ctr.Config.Name, "dsn", ctr.Config.DSN())
 		} else {
 			defer func() {
@@ -102,7 +124,7 @@ func run() error {
 			}()
 		}
 		dsn = ctr.Config.DSN()
-		env.Image = cfg.image
+		env.Image = cfg.Image
 		env.VMCPUs = pgcontainer.MachineCPUs(ctx)
 		if digest, err := ctr.ImageDigest(ctx); err == nil {
 			env.ImageDigest = digest
@@ -132,26 +154,26 @@ func run() error {
 		return fmt.Errorf("parse max_connections: %w", err)
 	}
 	maxWorkers := 0
-	for _, w := range cfg.workers {
+	for _, w := range cfg.Workers {
 		maxWorkers = max(maxWorkers, w)
 	}
-	if need := maxWorkers + cfg.completers + cfg.producers + cfg.enqueuers + 16; need > maxConns {
+	if need := maxWorkers + cfg.Completers + cfg.Producers + cfg.Enqueuers + 16; need > maxConns {
 		return fmt.Errorf("need %d connections but server max_connections is %d", need, maxConns)
 	}
 
-	for _, st := range cfg.stages {
-		for _, w := range cfg.workers {
-			for rep := 0; rep < cfg.repeat; rep++ {
+	for _, st := range cfg.Stages {
+		for _, w := range cfg.Workers {
+			for rep := 0; rep < cfg.Repeat; rep++ {
 				res, err := runCell(ctx, ctl, dsn, st, w, cfg, env)
 				if err != nil {
 					return fmt.Errorf("stage %s workers %d: %w", st.Name, w, err)
 				}
-				path, err := benchreport.WriteResult(cfg.resultsDir, res)
+				path, err := benchreport.WriteResult(cfg.ResultsDir, res)
 				if err != nil {
 					return err
 				}
 				slog.Info("cell done",
-					"mode", cfg.mode, "stage", st.Name, "workers", w, "repeat", rep+1,
+					"mode", cfg.Mode, "stage", st.Name, "workers", w, "repeat", rep+1,
 					"tasks_per_sec", fmt.Sprintf("%.0f", res.ThroughputPerSec),
 					"claim_p95_ms", fmt.Sprintf("%.2f", res.P95Millis),
 					"in_flight", res.MeanInFlight, "little_err_pct",
@@ -164,30 +186,32 @@ func run() error {
 }
 
 func runCell(ctx context.Context, ctl *queue.Store, dsn string, st queue.Stage,
-	workers int, cfg config, env benchreport.Environment,
+	workers int, cfg benchcfg.Config, env benchreport.Environment,
 ) (benchreport.Result, error) {
 	shards := 1
 	if st.Sharded {
-		shards = cfg.shards
+		shards = cfg.Shards
 		if shards == 0 || shards > workers {
 			shards = workers
 		}
 	}
 	res := benchreport.Result{
 		Benchmark:       "scaling-queue-postgres",
-		Mode:            cfg.mode,
+		Mode:            cfg.Mode,
+		Step:            cfg.Step,
+		EnvName:         env.StepEnv,
 		Stage:           st.Name,
 		Workers:         workers,
-		Completers:      cfg.completers,
-		Producers:       cfg.producers,
-		Slots:           cfg.slots,
+		Completers:      cfg.Completers,
+		Producers:       cfg.Producers,
+		Slots:           cfg.Slots,
 		Shards:          shards,
-		BatchSize:       cfg.batch,
-		CreateBatch:     cfg.createBatch,
-		DurationMinSecs: cfg.durationMin.Seconds(),
-		DurationMaxSecs: cfg.durationMax.Seconds(),
-		WarmupSeconds:   cfg.warmup.Seconds(),
-		WindowSeconds:   cfg.window.Seconds(),
+		BatchSize:       cfg.Batch,
+		CreateBatch:     cfg.CreateBatch,
+		DurationMinSecs: cfg.DurationMin.Seconds(),
+		DurationMaxSecs: cfg.DurationMax.Seconds(),
+		WarmupSeconds:   cfg.Warmup.Seconds(),
+		WindowSeconds:   cfg.Window.Seconds(),
 		StartedAt:       time.Now().UTC(),
 		Env:             env,
 	}
@@ -196,11 +220,11 @@ func runCell(ctx context.Context, ctl *queue.Store, dsn string, st queue.Stage,
 		return res, err
 	}
 
-	prefill := cfg.prefill
-	if cfg.mode == "steady" {
-		prefill = int(cfg.targetBacklog)
+	prefill := cfg.Prefill
+	if cfg.Mode == "steady" {
+		prefill = int(cfg.TargetBacklog)
 	}
-	if err := fill(ctx, ctl, prefill, cfg.createBatch, shards); err != nil {
+	if err := fill(ctx, ctl, prefill, cfg.CreateBatch, shards); err != nil {
 		return res, err
 	}
 	if err := ctl.Checkpoint(ctx); err != nil {
@@ -217,30 +241,30 @@ func runCell(ctx context.Context, ctl *queue.Store, dsn string, st queue.Stage,
 		return res, err
 	}
 	defer wstore.Close()
-	cstore, err := queue.Open(ctx, dsn, int32(cfg.completers), params)
+	cstore, err := queue.Open(ctx, dsn, int32(cfg.Completers), params)
 	if err != nil {
 		return res, err
 	}
 	defer cstore.Close()
-	pstore, err := queue.Open(ctx, dsn, int32(cfg.producers), params)
+	pstore, err := queue.Open(ctx, dsn, int32(cfg.Producers), params)
 	if err != nil {
 		return res, err
 	}
 	defer pstore.Close()
 
-	if cfg.mode == "ops" {
+	if cfg.Mode == "ops" {
 		return runOpsCell(ctx, ctl, res, wstore, pstore, st, workers, shards, cfg)
 	}
 
 	var counters queue.Counters
 	claimRec := benchreport.NewRecorder(workers)
-	doneRec := benchreport.NewRecorder(cfg.completers)
-	slots := queue.NewSlots(cfg.slots)
-	sched := queue.NewScheduler(cfg.completers * 64)
+	doneRec := benchreport.NewRecorder(cfg.Completers)
+	slots := queue.NewSlots(cfg.Slots)
+	sched := queue.NewScheduler(cfg.Completers * 64)
 
 	cellCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	errs := make(chan error, workers+cfg.completers+cfg.producers)
+	errs := make(chan error, workers+cfg.Completers+cfg.Producers)
 	var wg sync.WaitGroup
 
 	go sched.Run(cellCtx)
@@ -248,7 +272,7 @@ func runCell(ctx context.Context, ctl *queue.Store, dsn string, st queue.Stage,
 	for i := 0; i < workers; i++ {
 		lane := claimRec.Lane(i)
 		wq := queue.StageQueue{
-			Store: wstore, Stage: st, Queue: queueName, Batch: cfg.batch,
+			Store: wstore, Stage: st, Queue: queueName, Batch: cfg.Batch,
 			Shard: i % shards, Shards: shards,
 		}
 		wg.Add(1)
@@ -257,8 +281,8 @@ func runCell(ctx context.Context, ctl *queue.Store, dsn string, st queue.Stage,
 			errs <- queue.RunWorker(cellCtx, wq, queue.WorkerConfig{
 				Backoff:           queue.BackoffConfig{Base: time.Millisecond, Max: 100 * time.Millisecond},
 				EmptyPollInterval: 10 * time.Millisecond,
-				MinDuration:       cfg.durationMin,
-				MaxDuration:       cfg.durationMax,
+				MinDuration:       cfg.DurationMin,
+				MaxDuration:       cfg.DurationMax,
 				Slots:             slots,
 				Sched:             sched,
 				Record:            lane.Record,
@@ -266,7 +290,7 @@ func runCell(ctx context.Context, ctl *queue.Store, dsn string, st queue.Stage,
 		}()
 	}
 
-	for i := 0; i < cfg.completers; i++ {
+	for i := 0; i < cfg.Completers; i++ {
 		lane := doneRec.Lane(i)
 		cq := queue.StageQueue{Store: cstore, Stage: st, Queue: queueName}
 		wg.Add(1)
@@ -280,24 +304,24 @@ func runCell(ctx context.Context, ctl *queue.Store, dsn string, st queue.Stage,
 		}()
 	}
 
-	if cfg.mode == "steady" {
-		limiter := rate.NewLimiter(rate.Limit(2_000_000), cfg.createBatch*2)
+	if cfg.Mode == "steady" {
+		limiter := rate.NewLimiter(rate.Limit(2_000_000), cfg.CreateBatch*2)
 		backlog := func() int64 {
 			return int64(prefill) + counters.Created.Load() - counters.Claimed.Load()
 		}
 		pq := queue.StageQueue{Store: pstore, Stage: st, Queue: queueName, Shards: shards}
-		for i := 0; i < cfg.producers; i++ {
+		for i := 0; i < cfg.Producers; i++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
 				errs <- queue.RunProducer(cellCtx, pq, queue.ProducerConfig{
-					BatchSize: cfg.createBatch,
+					BatchSize: cfg.CreateBatch,
 					Limiter:   limiter,
 				}, &counters)
 			}()
 		}
 		go queue.RunController(cellCtx, limiter, queue.ControllerConfig{
-			Target:   cfg.targetBacklog,
+			Target:   cfg.TargetBacklog,
 			Gain:     0.2,
 			MinRate:  1,
 			MaxRate:  2_000_000,
@@ -306,7 +330,7 @@ func runCell(ctx context.Context, ctl *queue.Store, dsn string, st queue.Stage,
 		}, &counters)
 	}
 
-	waitErr := wait(cellCtx, cfg.warmup)
+	waitErr := wait(cellCtx, cfg.Warmup)
 
 	doneStart := counters.Done.Load()
 	retriesStart := counters.Retries.Load()
@@ -322,7 +346,7 @@ func runCell(ctx context.Context, ctl *queue.Store, dsn string, st queue.Stage,
 	go sampler.run(sampleCtx, 200*time.Millisecond)
 
 	if waitErr == nil {
-		waitErr = wait(cellCtx, cfg.window)
+		waitErr = wait(cellCtx, cfg.Window)
 	}
 	elapsed := time.Since(windowStart)
 	stopSampler()
@@ -376,7 +400,7 @@ func runCell(ctx context.Context, ctl *queue.Store, dsn string, st queue.Stage,
 	// Little's Law: tasks in flight = throughput x mean task duration. A run
 	// that reached a steady state satisfies it. A run that did not is still
 	// filling or draining its pipeline, whatever its throughput says.
-	meanDuration := (cfg.durationMin.Seconds() + cfg.durationMax.Seconds()) / 2
+	meanDuration := (cfg.DurationMin.Seconds() + cfg.DurationMax.Seconds()) / 2
 	res.ExpectedInFlight = res.ThroughputPerSec * meanDuration
 	if res.ExpectedInFlight > 0 {
 		res.LittleErrorPercent = math.Abs(res.MeanInFlight-res.ExpectedInFlight) / res.ExpectedInFlight * 100
@@ -394,7 +418,7 @@ func runCell(ctx context.Context, ctl *queue.Store, dsn string, st queue.Stage,
 	if claims := res.CompletedTasks; claims > 0 && res.EmptyClaims*20 > claims {
 		invalid("empty claims exceeded 5% of claim attempts")
 	}
-	if res.BacklogEnd < int64(workers*cfg.batch) {
+	if res.BacklogEnd < int64(workers*cfg.Batch) {
 		invalid("queue drained before the window ended")
 	}
 	// Counting noise on N tasks in flight falls off as 1/sqrt(N), so a cell
@@ -409,10 +433,10 @@ func runCell(ctx context.Context, ctl *queue.Store, dsn string, st queue.Stage,
 		invalid(fmt.Sprintf("tasks in flight missed Little's Law by %.0f%%, tolerance %.0f%%",
 			res.LittleErrorPercent, tolerance))
 	}
-	if sampler.peakInFlight() > float64(cfg.slots)*0.95 {
+	if sampler.peakInFlight() > float64(cfg.Slots)*0.95 {
 		invalid("task slots ran out, so slots capped throughput")
 	}
-	if cfg.mode == "steady" && res.BacklogVariationPercent > 20 {
+	if cfg.Mode == "steady" && res.BacklogVariationPercent > 20 {
 		invalid(fmt.Sprintf("queue length varied by %.0f%%, so it was not steady",
 			res.BacklogVariationPercent))
 	}
@@ -423,21 +447,21 @@ func runCell(ctx context.Context, ctl *queue.Store, dsn string, st queue.Stage,
 // nothing writes DONE and nothing sits in flight. The queue length is the
 // second result, because it shows which side of the queue is faster.
 func runOpsCell(ctx context.Context, ctl *queue.Store, res benchreport.Result,
-	wstore, pstore *queue.Store, st queue.Stage, workers, shards int, cfg config,
+	wstore, pstore *queue.Store, st queue.Stage, workers, shards int, cfg benchcfg.Config,
 ) (benchreport.Result, error) {
 	var counters queue.Counters
 	claimRec := benchreport.NewRecorder(workers)
 
 	cellCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	errs := make(chan error, workers+cfg.enqueuers)
+	errs := make(chan error, workers+cfg.Enqueuers)
 	var wg sync.WaitGroup
 
 	limiter := rate.NewLimiter(rate.Inf, 1)
-	if cfg.opsQueueTarget > 0 {
-		limiter = rate.NewLimiter(rate.Limit(cfg.opsQueueTarget), 100)
+	if cfg.OpsQueueTarget > 0 {
+		limiter = rate.NewLimiter(rate.Limit(cfg.OpsQueueTarget), 100)
 	}
-	for i := 0; i < cfg.enqueuers; i++ {
+	for i := 0; i < cfg.Enqueuers; i++ {
 		eq := queue.StageQueue{Store: pstore, Stage: st, Queue: queueName, Shards: shards}
 		wg.Add(1)
 		go func() {
@@ -448,9 +472,9 @@ func runOpsCell(ctx context.Context, ctl *queue.Store, res benchreport.Result,
 			}, &counters)
 		}()
 	}
-	if cfg.opsQueueTarget > 0 {
+	if cfg.OpsQueueTarget > 0 {
 		go queue.RunController(cellCtx, limiter, queue.ControllerConfig{
-			Target:   int64(cfg.opsQueueTarget),
+			Target:   int64(cfg.OpsQueueTarget),
 			Gain:     0.2,
 			MinRate:  1,
 			MaxRate:  2_000_000,
@@ -477,7 +501,7 @@ func runOpsCell(ctx context.Context, ctl *queue.Store, res benchreport.Result,
 		}()
 	}
 
-	waitErr := wait(cellCtx, cfg.warmup)
+	waitErr := wait(cellCtx, cfg.Warmup)
 	createdStart := counters.Created.Load()
 	claimedStart := counters.Claimed.Load()
 	emptyStart := counters.EmptyClaims.Load()
@@ -490,10 +514,10 @@ func runOpsCell(ctx context.Context, ctl *queue.Store, res benchreport.Result,
 	}
 	s := newSampler(&counters, depth)
 	sampleCtx, stopSampler := context.WithCancel(cellCtx)
-	go s.run(sampleCtx, cfg.queueSample)
+	go s.run(sampleCtx, cfg.QueueSample)
 
 	if waitErr == nil {
-		waitErr = wait(cellCtx, cfg.window)
+		waitErr = wait(cellCtx, cfg.Window)
 	}
 	elapsed := time.Since(windowStart)
 	stopSampler()
@@ -669,6 +693,25 @@ func fill(ctx context.Context, s *queue.Store, total, batch, shards int) error {
 	return nil
 }
 
+// recorded reports whether this mode and step already hold a valid result, so a
+// repeated run resumes instead of measuring the same cell again.
+func recorded(dir, mode string, step int) bool {
+	path := filepath.Join(dir, benchreport.ResultsFile)
+	if _, err := os.Stat(path); err != nil {
+		return false
+	}
+	results, err := benchreport.ReadResults([]string{path})
+	if err != nil {
+		return false
+	}
+	for _, r := range results {
+		if r.Mode == mode && r.Step == step && r.Valid {
+			return true
+		}
+	}
+	return false
+}
+
 func wait(ctx context.Context, d time.Duration) error {
 	t := time.NewTimer(d)
 	defer t.Stop()
@@ -678,82 +721,6 @@ func wait(ctx context.Context, d time.Duration) error {
 	case <-t.C:
 		return nil
 	}
-}
-
-func parseFlags(args []string) (config, error) {
-	fs := flag.NewFlagSet("bench", flag.ContinueOnError)
-	stages := fs.String("stages", "all", "comma-separated stage names, or all")
-	workers := fs.String("workers", "16,32", "comma-separated claim-loop counts")
-	cfg := config{}
-	fs.StringVar(&cfg.mode, "mode", "steady", "drain or steady")
-	fs.IntVar(&cfg.completers, "completers", 128, "goroutines that write DONE")
-	fs.IntVar(&cfg.enqueuers, "enqueuers", 16, "enqueue loops, ops mode only")
-	fs.IntVar(&cfg.opsQueueTarget, "ops-queue-target", 0,
-		"hold the queue at this length in ops mode, 0 enqueues without a limit")
-	fs.DurationVar(&cfg.queueSample, "queue-sample", 10*time.Second, "queue length sampling interval, ops mode")
-	fs.IntVar(&cfg.slots, "slots", 3_000_000, "maximum tasks in flight")
-	fs.IntVar(&cfg.shards, "shards", 0, "shards for the sharded stages, 0 means one per claim loop")
-	fs.IntVar(&cfg.batch, "batch", 1, "tasks per claim")
-	fs.IntVar(&cfg.createBatch, "create-batch", 1000, "rows per insert")
-	fs.DurationVar(&cfg.durationMin, "duration-min", 10*time.Second, "shortest task duration")
-	fs.DurationVar(&cfg.durationMax, "duration-max", 20*time.Second, "longest task duration")
-	fs.IntVar(&cfg.producers, "producers", 4, "producer goroutines, steady mode only")
-	fs.Int64Var(&cfg.targetBacklog, "target-backlog", 1_000_000, "queue length the controller holds")
-	fs.IntVar(&cfg.prefill, "prefill", 2_000_000, "rows inserted before a drain run")
-	fs.DurationVar(&cfg.warmup, "warmup", 60*time.Second, "warm-up before measuring")
-	fs.DurationVar(&cfg.window, "window", 5*time.Minute, "measurement window")
-	fs.IntVar(&cfg.repeat, "repeat", 1, "repeats per stage and worker count")
-	fs.StringVar(&cfg.dsn, "dsn", "", "use this Postgres instead of a managed container")
-	fs.StringVar(&cfg.image, "image", "docker.io/library/postgres:18", "container image")
-	fs.IntVar(&cfg.port, "port", 55432, "host port for the managed container")
-	fs.BoolVar(&cfg.keep, "keep-container", false, "do not stop the managed container")
-	fs.StringVar(&cfg.resultsDir, "results-dir", "scaling-queue-postgres/results", "where result JSON files land")
-	fs.IntVar(&cfg.maxConnections, "max-connections", 400, "max_connections for the managed container")
-	if err := fs.Parse(args); err != nil {
-		return cfg, err
-	}
-
-	if cfg.mode != "drain" && cfg.mode != "steady" && cfg.mode != "ops" {
-		return cfg, fmt.Errorf("mode must be drain, steady, or ops, got %q", cfg.mode)
-	}
-	if *stages == "all" {
-		cfg.stages = queue.Stages()
-	} else {
-		for _, name := range strings.Split(*stages, ",") {
-			st, ok := queue.StageByName(strings.TrimSpace(name))
-			if !ok {
-				return cfg, fmt.Errorf("unknown stage %q, valid: %s",
-					name, strings.Join(queue.StageNames(), ", "))
-			}
-			cfg.stages = append(cfg.stages, st)
-		}
-	}
-	for _, s := range strings.Split(*workers, ",") {
-		w, err := strconv.Atoi(strings.TrimSpace(s))
-		if err != nil || w < 1 {
-			return cfg, fmt.Errorf("bad worker count %q", s)
-		}
-		cfg.workers = append(cfg.workers, w)
-	}
-	// Tasks in flight need one full task duration to reach a steady state.
-	if cfg.mode != "ops" && cfg.warmup <= cfg.durationMax {
-		return cfg, fmt.Errorf("warmup %v must exceed the longest task duration %v",
-			cfg.warmup, cfg.durationMax)
-	}
-	if cfg.shards < 0 {
-		return cfg, fmt.Errorf("shards cannot be negative, got %d", cfg.shards)
-	}
-	for _, w := range cfg.workers {
-		if cfg.shards > w {
-			return cfg, fmt.Errorf(
-				"%d shards with %d claim loops would leave shards with no worker", cfg.shards, w,
-			)
-		}
-	}
-	if ws := os.Getenv("BUILD_WORKSPACE_DIRECTORY"); ws != "" && !filepath.IsAbs(cfg.resultsDir) {
-		cfg.resultsDir = filepath.Join(ws, cfg.resultsDir)
-	}
-	return cfg, nil
 }
 
 func gitCommit() string {

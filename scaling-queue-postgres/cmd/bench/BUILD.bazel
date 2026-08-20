@@ -6,7 +6,9 @@ go_library(
     importpath = "github.com/iampat/benchmarks/scaling-queue-postgres/cmd/bench",
     visibility = ["//visibility:private"],
     deps = [
+        "//scaling-queue-postgres/internal/benchcfg",
         "//scaling-queue-postgres/internal/benchreport",
+        "//scaling-queue-postgres/internal/experiment",
         "//scaling-queue-postgres/internal/pgcontainer",
         "//scaling-queue-postgres/internal/queue",
         "@org_golang_x_time//rate",
