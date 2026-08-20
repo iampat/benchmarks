@@ -23,6 +23,35 @@ per statement. No task runs, nothing writes `DONE`, and nothing sits in
 flight, so a claim is the whole operation. The queue starts empty and finds
 its own length.
 
+**This run is in progress.** Six of the eight rows are still measuring.
+
+| Step | operations/s | enqueue/s | dequeue/s | Claim p95 | Empty claims | Mean queue |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0. Naive claim query | too slow to measure | 21,090 | 0.5 | 64 s | 0 | 3,301,284 |
+| 1. `SKIP LOCKED` | | | | | | |
+| 2. `READ COMMITTED` | | | | | | |
+| 3. Partial covering index | | | | | | |
+| 4. `synchronous_commit = off` | | | | | | |
+| 5. One statement per claim | | | | | | |
+| 6. Shard the queue head | | | | | | |
+| 7. Batch the completions | 84,010 | 42,005 | 42,005 | 0.24 ms | 2,541,607 | 1,655 |
+
+The two ends of the ladder behave in opposite ways, and the queue length
+says why.
+
+The naive claim query manages 164 claims in 5 minutes, against 6.3 million
+inserts. It fails the rule that a window must hold 1000 completions, so it
+reports no rate. Its queue grows to 3.3 million rows, and a larger queue
+makes each claim slower still.
+
+The last step claims as fast as it inserts. Its queue stays near empty, at
+1,655 rows, and the claim loops poll an empty queue 2.5 million times.
+
+## Loops on each side
+
+The number of loops changes the result more than most stages do. The rows
+below use the last step.
+
 | Loops each side | operations/s | Gain | enqueue/s | dequeue/s | Claim p95 | Empty claims | Mean queue |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | 16 | 84,010 | — | 42,005 | 42,005 | 0.24 ms | 2,541,607 | 1,655 |
@@ -40,13 +69,12 @@ its own length.
 
 The enqueue and dequeue rates are equal in every row, because a claim cannot
 take a row that no insert has written. Dequeue is the faster side, so the
-queue stays near empty and the insert side sets the pace.
+insert side sets the pace.
 
-The mean queue length shows this directly. It falls from 1,655 to 10 as the
-groups grow. The queue is empty and the claim loops poll it: 2.5 million
-empty claims at 16 loops each, and 26.7 million at 128. Those polls are
-statements too, and they compete with the inserts they wait for. Adding
-loops past 16 costs throughput.
+Mean queue length falls from 1,655 to 10 as the groups grow. The claim loops
+then poll an empty queue, 2.5 million times at 16 loops each and 26.7
+million at 128. Those polls are statements too, and they compete with the
+inserts they wait for. Adding loops past 16 costs throughput.
 
 ## A task costs less than a queue operation
 
