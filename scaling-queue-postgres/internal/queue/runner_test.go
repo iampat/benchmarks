@@ -77,9 +77,7 @@ func TestWorkerAndCompleterMoveATask(t *testing.T) {
 	go sched.Run(ctx)
 
 	go queue.RunWorker(ctx, f, newWorkerConfig(slots, sched), &c)
-	go queue.RunCompleter(ctx, f, queue.CompleterConfig{
-		Batch: 1, MaxWait: time.Millisecond, Slots: slots, Sched: sched,
-	}, &c)
+	go queue.RunCompleter(ctx, f, queue.CompleterConfig{Slots: slots, Sched: sched}, &c)
 
 	f.claims <- claimStep{ids: []int64{7}}
 	select {
@@ -103,35 +101,6 @@ func TestWorkerAndCompleterMoveATask(t *testing.T) {
 	}
 	if c.InFlight.Load() != 0 {
 		t.Errorf("in flight = %d after completion, want 0", c.InFlight.Load())
-	}
-}
-
-// The completer waits briefly so completions that come due together travel in
-// one statement.
-func TestCompleterBatchesCompletions(t *testing.T) {
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	f := newFakeQueue()
-	var c queue.Counters
-	slots := queue.NewSlots(8)
-	sched := queue.NewScheduler(16)
-	go sched.Run(ctx)
-	go queue.RunCompleter(ctx, f, queue.CompleterConfig{
-		Batch: 4, MaxWait: time.Second, Slots: slots, Sched: sched,
-	}, &c)
-
-	now := time.Now()
-	for i := int64(1); i <= 4; i++ {
-		slots.Acquire(ctx)
-		sched.Add(i, now)
-	}
-	select {
-	case ids := <-f.dones:
-		if len(ids) != 4 {
-			t.Errorf("Done got %d ids, want 4 in one statement", len(ids))
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("completer never flushed")
 	}
 }
 

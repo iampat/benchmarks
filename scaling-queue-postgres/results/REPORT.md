@@ -6,15 +6,10 @@
 - Command: `bench -dsn=postgres://postgres@127.0.0.1:55444/postgres -mode=drain -stages=0-vanilla,1-skip-locked,2-read-committed -workers=16 -prefill=1000000`
 - Command: `bench -dsn=postgres://postgres@127.0.0.1:55444/postgres -mode=drain -stages=3-partial-index,4-async-commit,5-single-statement -workers=16 -prefill=8000000`
 - Command: `bench -dsn=postgres://postgres@127.0.0.1:55444/postgres -mode=drain -stages=6-sharded,7-batched-completion -workers=64 -prefill=18000000`
-- Command: `bench -dsn=postgres://postgres@127.0.0.1:55444/postgres -mode=drain -stages=7-batched-completion -workers=64 -prefill=24000000 -repeat=3`
-- Command: `bench -dsn=postgres://postgres@127.0.0.1:55444/postgres -mode=ops -stages=7-batched-completion -workers=128 -enqueuers=128 -warmup=15s -window=5m -queue-sample=10s -prefill=0`
-- Command: `bench -dsn=postgres://postgres@127.0.0.1:55444/postgres -mode=ops -stages=7-batched-completion -workers=16 -enqueuers=16 -warmup=15s -window=5m -queue-sample=10s -prefill=0`
-- Command: `bench -dsn=postgres://postgres@127.0.0.1:55444/postgres -mode=ops -stages=7-batched-completion -workers=32 -enqueuers=32 -warmup=15s -window=5m -queue-sample=10s -prefill=0`
-- Command: `bench -dsn=postgres://postgres@127.0.0.1:55444/postgres -mode=ops -stages=7-batched-completion -workers=64 -enqueuers=64 -warmup=15s -window=5m -queue-sample=10s -prefill=0`
+- Command: `bench -dsn=postgres://postgres@127.0.0.1:55444/postgres -mode=ops -stages=all -workers=16 -enqueuers=16 -warmup=15s -window=5m -queue-sample=10s -prefill=0`
 - Command: `bench -dsn=postgres://postgres@127.0.0.1:55444/postgres -mode=steady -stages=0-vanilla,1-skip-locked,2-read-committed -workers=8,16`
 - Command: `bench -dsn=postgres://postgres@127.0.0.1:55444/postgres -mode=steady -stages=3-partial-index,4-async-commit,5-single-statement -workers=16`
 - Command: `bench -dsn=postgres://postgres@127.0.0.1:55444/postgres -mode=steady -stages=6-sharded,7-batched-completion -workers=64,128`
-- Command: `bench -dsn=postgres://postgres@127.0.0.1:55444/postgres -mode=steady -stages=7-batched-completion -workers=64 -repeat=2`
 - Settings: autovacuum=on, autovacuum_naptime=1min, fsync=on, max_connections=1200, shared_buffers=128MB, synchronous_commit=on
 
 ### Cross-check (fill the queue, then consume it)
@@ -35,7 +30,6 @@
 | stage | tasks/s | vs prev | claim p50 | claim p95 | done p95 | in flight | Little err | retries | runs |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | 6-sharded | 30864 | — | 0.68 ms | 7.24 ms | 5.30 ms | 448655 | 3.1% | 0 | 1 |
-| 7-batched-completion | 33241 | +8% | 0.60 ms | 7.06 ms | 7.24 ms | 500279 | 2.1% | 0 | 3 |
 
 ### Queue operations (enqueue and claim, one row per statement)
 
@@ -43,25 +37,9 @@
 
 | stage | enqueue/s | dequeue/s | operations/s | mean queue | empty claims | runs |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 7-batched-completion | 42005 | 42005 | 84010 | 1655 | 2541607 | 1 |
-
-#### 32 claim loops
-
-| stage | enqueue/s | dequeue/s | operations/s | mean queue | empty claims | runs |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 7-batched-completion | 39761 | 39761 | 79523 | 186 | 7139251 | 1 |
-
-#### 64 claim loops
-
-| stage | enqueue/s | dequeue/s | operations/s | mean queue | empty claims | runs |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 7-batched-completion | 26616 | 26616 | 53233 | 17 | 14460580 | 1 |
-
-#### 128 claim loops
-
-| stage | enqueue/s | dequeue/s | operations/s | mean queue | empty claims | runs |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 7-batched-completion | 12018 | 12018 | 24036 | 10 | 26694454 | 1 |
+| 0-vanilla | invalid: only 6326870 enqueues and 164 dequeues, too few to measure | | | | | | | | 1 |
+| 1-skip-locked | invalid: only 6219027 enqueues and 226 dequeues, too few to measure | | | | | | | | 1 |
+| 2-read-committed | 18400 | 16 | 18416 | 2613595 | 0 | 1 |
 
 ### The task queue (insert, claim, and complete together)
 
@@ -89,14 +67,12 @@
 | stage | tasks/s | vs prev | claim p50 | claim p95 | done p95 | in flight | Little err | retries | runs |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | 6-sharded | 34193 | — | 0.65 ms | 6.50 ms | 3.93 ms | 508067 | 0.9% | 0 | 1 |
-| 7-batched-completion | 38322 | +12% | 0.53 ms | 5.21 ms | 5.88 ms | 564390 | 1.9% | 0 | 3 |
 
 #### 128 claim loops
 
 | stage | tasks/s | vs prev | claim p50 | claim p95 | done p95 | in flight | Little err | retries | runs |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | 6-sharded | 27454 | — | 1.75 ms | 18.14 ms | 10.29 ms | 406153 | 1.4% | 0 | 1 |
-| 7-batched-completion | 32322 | +18% | 1.21 ms | 15.79 ms | 12.22 ms | 473588 | 2.3% | 0 | 1 |
 
 Latency percentiles are closed-loop service times, retries included.
 "Little err" is how far tasks in flight sat from throughput times mean

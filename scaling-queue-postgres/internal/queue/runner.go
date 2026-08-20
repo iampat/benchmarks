@@ -233,72 +233,34 @@ func RunWorker(ctx context.Context, q Claimer, cfg WorkerConfig, c *Counters) er
 }
 
 type CompleterConfig struct {
-	Batch   int
-	MaxWait time.Duration
-	Slots   Slots
-	Sched   *Scheduler
-	Record  func(time.Duration)
-	OnError func(error)
+	Slots  Slots
+	Sched  *Scheduler
+	Record func(time.Duration)
 }
 
-// RunCompleter writes DONE for tasks whose duration elapsed. A batch above 1
-// lets completions that came due together travel in one statement.
+// RunCompleter writes DONE for one task whose duration elapsed, and then the
+// next. A claim takes one task, so a completion writes one task.
 func RunCompleter(ctx context.Context, q Completer, cfg CompleterConfig, c *Counters) error {
-	batch := make([]int64, 0, cfg.Batch)
-	flush := func() error {
-		if len(batch) == 0 {
-			return nil
-		}
-		start := time.Now()
-		err := q.Done(ctx, batch)
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-			return err
-		}
-		if cfg.Record != nil {
-			cfg.Record(time.Since(start))
-		}
-		c.Done.Add(int64(len(batch)))
-		c.InFlight.Add(-int64(len(batch)))
-		for range batch {
-			cfg.Slots.Release()
-		}
-		batch = batch[:0]
-		return nil
-	}
-
+	ids := make([]int64, 1)
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case id := <-cfg.Sched.Due():
-			batch = append(batch, id)
-			if len(batch) >= cfg.Batch {
-				if err := flush(); err != nil {
-					return err
-				}
-				continue
-			}
-			// Wait briefly for company, then send what we have.
-			timer := time.NewTimer(cfg.MaxWait)
-			for len(batch) < cfg.Batch {
-				select {
-				case id := <-cfg.Sched.Due():
-					batch = append(batch, id)
-					continue
-				case <-timer.C:
-				case <-ctx.Done():
-					timer.Stop()
+			ids[0] = id
+			start := time.Now()
+			if err := q.Done(ctx, ids); err != nil {
+				if ctx.Err() != nil {
 					return nil
 				}
-				break
-			}
-			timer.Stop()
-			if err := flush(); err != nil {
 				return err
 			}
+			if cfg.Record != nil {
+				cfg.Record(time.Since(start))
+			}
+			c.Done.Add(1)
+			c.InFlight.Add(-1)
+			cfg.Slots.Release()
 		}
 	}
 }

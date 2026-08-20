@@ -11,8 +11,8 @@ import (
 
 func TestStages(t *testing.T) {
 	stages := queue.Stages()
-	if len(stages) != 8 {
-		t.Fatalf("got %d stages, want 8", len(stages))
+	if len(stages) != 7 {
+		t.Fatalf("got %d stages, want 7", len(stages))
 	}
 
 	seen := map[string]bool{}
@@ -36,9 +36,6 @@ func TestStages(t *testing.T) {
 		}
 		if !strings.Contains(st.IndexDDL, "tasks_claim_idx") {
 			t.Errorf("stage %s: IndexDDL does not create tasks_claim_idx: %q", st.Name, st.IndexDDL)
-		}
-		if st.CompletionBatch < 1 {
-			t.Errorf("stage %s: completion batch %d must be at least 1", st.Name, st.CompletionBatch)
 		}
 	}
 
@@ -75,13 +72,11 @@ func TestStages(t *testing.T) {
 		syncOff         bool
 		singleStatement bool
 		sharded         bool
-		completionBatch int
 	}{
-		{"3-partial-index", false, false, false, 1},
-		{"4-async-commit", true, false, false, 1},
-		{"5-single-statement", true, true, false, 1},
-		{"6-sharded", true, true, true, 1},
-		{"7-batched-completion", true, true, true, 100},
+		{"3-partial-index", false, false, false},
+		{"4-async-commit", true, false, false},
+		{"5-single-statement", true, true, false},
+		{"6-sharded", true, true, true},
 	}
 	for i, want := range wantFlags {
 		st := stages[i+3]
@@ -90,8 +85,7 @@ func TestStages(t *testing.T) {
 		}
 		if (st.SyncCommit == "off") != want.syncOff ||
 			st.SingleStatement != want.singleStatement ||
-			st.Sharded != want.sharded ||
-			st.CompletionBatch != want.completionBatch {
+			st.Sharded != want.sharded {
 			t.Errorf("stage %s flags = %+v, want %+v", st.Name, st, want)
 		}
 	}

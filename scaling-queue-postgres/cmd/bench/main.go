@@ -187,7 +187,6 @@ func runCell(ctx context.Context, ctl *queue.Store, dsn string, st queue.Stage,
 		DurationMaxSecs: cfg.durationMax.Seconds(),
 		WarmupSeconds:   cfg.warmup.Seconds(),
 		WindowSeconds:   cfg.window.Seconds(),
-		CompletionBatch: st.CompletionBatch,
 		StartedAt:       time.Now().UTC(),
 		Env:             env,
 	}
@@ -273,11 +272,9 @@ func runCell(ctx context.Context, ctl *queue.Store, dsn string, st queue.Stage,
 		go func() {
 			defer wg.Done()
 			errs <- queue.RunCompleter(cellCtx, cq, queue.CompleterConfig{
-				Batch:   st.CompletionBatch,
-				MaxWait: 5 * time.Millisecond,
-				Slots:   slots,
-				Sched:   sched,
-				Record:  lane.Record,
+				Slots:  slots,
+				Sched:  sched,
+				Record: lane.Record,
 			}, &counters)
 		}()
 	}

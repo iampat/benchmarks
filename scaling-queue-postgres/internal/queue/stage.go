@@ -13,8 +13,6 @@ type Stage struct {
 	SingleStatement bool
 	// A shard column splits the queue head into independent index tails.
 	Sharded bool
-	// Completions wait to travel together. 1 sends each one on its own.
-	CompletionBatch int
 }
 
 // CONSIDER(ali): every stage orders by (priority, created_at) so the sharded
@@ -49,30 +47,26 @@ const (
 	shardedIndexDDL = "CREATE INDEX tasks_claim_idx ON tasks (queue_name, shard, priority, created_at) WHERE status = 'CREATED'"
 )
 
-// Stages 0 to 3 replicate the DBOS article. Stages 4 to 7 go past it. Each
+// Stages 0 to 3 replicate the DBOS article. Stages 4 to 6 go past it. Each
 // stage keeps every change of the stage above it.
 func Stages() []Stage {
 	skip := "FOR UPDATE SKIP LOCKED"
 	return []Stage{
-		{Name: "0-vanilla", Iso: pgx.RepeatableRead, LockClause: "FOR UPDATE", IndexDDL: basicIndexDDL, CompletionBatch: 1},
-		{Name: "1-skip-locked", Iso: pgx.RepeatableRead, LockClause: skip, IndexDDL: basicIndexDDL, CompletionBatch: 1},
-		{Name: "2-read-committed", Iso: pgx.ReadCommitted, LockClause: skip, IndexDDL: basicIndexDDL, CompletionBatch: 1},
-		{Name: "3-partial-index", Iso: pgx.ReadCommitted, LockClause: skip, IndexDDL: partialIndexDDL, CompletionBatch: 1},
+		{Name: "0-vanilla", Iso: pgx.RepeatableRead, LockClause: "FOR UPDATE", IndexDDL: basicIndexDDL},
+		{Name: "1-skip-locked", Iso: pgx.RepeatableRead, LockClause: skip, IndexDDL: basicIndexDDL},
+		{Name: "2-read-committed", Iso: pgx.ReadCommitted, LockClause: skip, IndexDDL: basicIndexDDL},
+		{Name: "3-partial-index", Iso: pgx.ReadCommitted, LockClause: skip, IndexDDL: partialIndexDDL},
 		{
 			Name: "4-async-commit", Iso: pgx.ReadCommitted, LockClause: skip, IndexDDL: partialIndexDDL,
-			SyncCommit: "off", CompletionBatch: 1,
+			SyncCommit: "off",
 		},
 		{
 			Name: "5-single-statement", Iso: pgx.ReadCommitted, LockClause: skip, IndexDDL: partialIndexDDL,
-			SyncCommit: "off", SingleStatement: true, CompletionBatch: 1,
+			SyncCommit: "off", SingleStatement: true,
 		},
 		{
 			Name: "6-sharded", Iso: pgx.ReadCommitted, LockClause: skip, IndexDDL: shardedIndexDDL,
-			SyncCommit: "off", SingleStatement: true, Sharded: true, CompletionBatch: 1,
-		},
-		{
-			Name: "7-batched-completion", Iso: pgx.ReadCommitted, LockClause: skip, IndexDDL: shardedIndexDDL,
-			SyncCommit: "off", SingleStatement: true, Sharded: true, CompletionBatch: 100,
+			SyncCommit: "off", SingleStatement: true, Sharded: true,
 		},
 	}
 }

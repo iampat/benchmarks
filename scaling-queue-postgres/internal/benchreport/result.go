@@ -22,7 +22,6 @@ type Result struct {
 	Shards          int     `json:"shards"`
 	BatchSize       int     `json:"batch_size"`
 	CreateBatch     int     `json:"create_batch"`
-	CompletionBatch int     `json:"completion_batch"`
 	DurationMinSecs float64 `json:"duration_min_seconds"`
 	DurationMaxSecs float64 `json:"duration_max_seconds"`
 	WarmupSeconds   float64 `json:"warmup_seconds"`

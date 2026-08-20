@@ -23,7 +23,7 @@ per statement. No task runs, nothing writes `DONE`, and nothing sits in
 flight, so a claim is the whole operation. The queue starts empty and finds
 its own length.
 
-**This run is in progress.** Six of the eight rows are still measuring.
+**This run is in progress.** Six of the seven rows are still measuring.
 
 | Step | operations/s | enqueue/s | dequeue/s | Claim p95 | Empty claims | Mean queue |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -34,18 +34,11 @@ its own length.
 | 4. `synchronous_commit = off` | | | | | | |
 | 5. One statement per claim | | | | | | |
 | 6. Shard the queue head | | | | | | |
-| 7. Batch the completions | 84,010 | 42,005 | 42,005 | 0.24 ms | 2,541,607 | 1,655 |
-
-The two ends of the ladder behave in opposite ways, and the queue length
-says why.
 
 The naive claim query manages 164 claims in 5 minutes, against 6.3 million
 inserts. It fails the rule that a window must hold 1000 completions, so it
 reports no rate. Its queue grows to 3.3 million rows, and a larger queue
 makes each claim slower still.
-
-The last step claims as fast as it inserts. Its queue stays near empty, at
-1,655 rows, and the claim loops poll an empty queue 2.5 million times.
 
 ## The task queue benchmark
 
@@ -62,8 +55,9 @@ Each stage runs a 5 minute window at its best worker count. Repeated runs of
 the same cell vary by about 2 percent, so a difference under 4 percent is
 not a difference.
 
-[METHOD.md](METHOD.md) covers the harness, the checks a cell passes before
-it reports a number, and what those checks found.
+[METHOD.md](METHOD.md) covers the rest. It describes the harness and its
+modes, the flags, and the loop counts. It also lists the checks a cell
+passes before it reports a number, and what those checks found.
 
 ## Results
 
@@ -76,21 +70,19 @@ it reports a number, and what those checks found.
 | 4. `synchronous_commit = off` | 14,854 | 1.05x | 16 | 1.9 ms | 0 | this benchmark |
 | 5. One statement per claim | 16,296 | 1.10x | 16 | 1.9 ms | 0 | this benchmark |
 | 6. Shard the queue head | 34,194 | 2.10x | 64 | 6.5 ms | 0 | this benchmark |
-| 7. Batch the completions | 38,904 | 1.14x | 64 | 5.0 ms | 0 | this benchmark |
 
-The article's path gives 1030x. The steps past it give another 2.8x. The
-whole ladder is 2,900x.
+The article's path gives 1030x. The steps past it give another 2.4x. The
+whole ladder is 2,550x.
 
 ```
                     log scale, three marks per doubling
-  0 vanilla            ║░                                         13
-  1 SKIP LOCKED        ║░                                         14
-  2 READ COMMITTED     ║░                                         13
-  3 partial index      ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░       14,112
-  4 async commit       ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░       14,854
-  5 one statement      ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░      16,296
-  6 sharded            ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   34,194
-  7 batched completion ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  38,904
+  0 vanilla          ║░                                         13
+  1 SKIP LOCKED      ║░                                         14
+  2 READ COMMITTED   ║░                                         13
+  3 partial index    ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░       14,112
+  4 async commit     ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░       14,854
+  5 one statement    ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░      16,296
+  6 sharded          ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   34,194
 ```
 
 ## The partial covering index
@@ -115,8 +107,8 @@ the index matters more here than it did at a batch of 10 tasks.
 
 ## Sharding the queue head
 
-Stages 4 and 5 buy 5 and 10 percent. Sharding the queue head buys 110
-percent, and batching the completions buys another 14 percent.
+Stages 4 and 5 buy 5 and 10 percent each. Sharding the queue head buys 110
+percent, the largest gain past the article.
 
 A 30 second sweep over worker counts shows why. Every unsharded stage peaks
 at 16 claim loops and then falls.
@@ -134,10 +126,9 @@ splits that head, and the shape changes.
 | Stage | 16 | 32 | 64 | 128 | 256 | 512 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | 6. sharded | 46,531 | 53,626 | 59,313 | **61,338** | 46,873 | 35,375 |
-| 7. batched completion | 55,790 | 63,315 | **69,273** | 67,406 | 51,720 | 36,677 |
 
-Both sweeps run past their peak and come back down, so neither peak sits at
-the edge of the range.
+The sweep runs past the peak and comes back down, so the peak does not sit
+at the edge of the range.
 
 ## Window length
 
@@ -147,9 +138,8 @@ The same stages measured over a 30 second window read far higher.
 | --- | ---: | ---: | ---: |
 | 5. one statement | 23,501 | 16,296 | 44 percent |
 | 6. sharded | 61,338 | 34,194 | 79 percent |
-| 7. batched completion | 69,273 | 38,904 | 78 percent |
 
-At 35,000 tasks per second a 5 minute window moves 10 million tasks, and
+At 34,000 tasks per second a 5 minute window moves 10 million tasks, and
 each task writes three row versions. The table carries 30 million row
 versions by the end, autovacuum runs hard, and the index grows. A 30 second
 window finishes before any of that starts.
@@ -160,11 +150,3 @@ The 5 minute numbers measure a queue that has been running.
 The best worker count moves too. Over 30 seconds the sharded stage looked
 fastest at 128 claim loops. Over 5 minutes 64 wins, and 128 is 20 percent
 slower.
-
-## Other engines
-
-CockroachDB, on three nodes with replication factor 3, was not promising on
-this machine. Throughput stayed two orders of magnitude below Postgres under
-the same schema and workload. `SKIP LOCKED` made it slower, not faster.
-CockroachDB needs its own query and schema design, so this benchmark did not
-pursue it.
