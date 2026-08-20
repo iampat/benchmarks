@@ -172,6 +172,27 @@ each of which would have reported a number that looked reasonable:
 - A cell with a handful of completions that passed as valid.
 - A drain prefill so large that the slow stages became unmeasurable.
 
+## Window length
+
+The same stages measured over a 30 second window read far higher.
+
+| Stage | 30 seconds | 5 minutes | Overstatement |
+| --- | ---: | ---: | ---: |
+| 5. one statement | 23,501 | 16,296 | 44 percent |
+| 6. sharded | 61,338 | 34,194 | 79 percent |
+
+At 34,000 tasks per second a 5 minute window moves 10 million tasks, and
+each task writes three row versions. The table carries 30 million row
+versions by the end, autovacuum runs hard, and the index grows. A 30 second
+window finishes before any of that starts.
+
+The short numbers are not wrong. They measure a queue that has just started.
+The 5 minute numbers measure a queue that has been running.
+
+The best worker count moves too. Over 30 seconds the sharded stage looked
+fastest at 128 claim loops. Over 5 minutes 64 wins, and 128 is 20 percent
+slower.
+
 ## Sizing a drain run
 
 A drain run consumes its prefill and never refills. The prefill must exceed
