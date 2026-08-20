@@ -148,6 +148,32 @@ charting them.
 - **The backlog** must survive the window. A drained queue ends the
   measurement early.
 
+## What the checks found in the reported run
+
+Every stage held its queue steady. The queue started at 1,000,000 tasks and
+ended between 1,001,651 and 1,095,287, in every stage. Tasks in flight
+matched throughput times mean task duration within 3.1 percent everywhere.
+
+The `drain` mode reaches the same answer by a different route. It fills the
+queue and then consumes it, with no producer and no controller running. It
+agrees with the reported numbers within 4 to 16 percent on every stage.
+Neither the producer load nor the controller shapes the result.
+
+The checks are not decoration. They caught eight faults during development,
+each of which would have reported a number that looked reasonable:
+
+- Shards with no worker pinned to them, so half the tasks were never
+  claimable. The stage reported 5,024 tasks per second instead of 48,059.
+- A completer pool that saturated, so tasks in flight grew without bound.
+- A target queue too small for the controller to steer.
+- An insert rate floor that outran a slow stage and grew its queue forever.
+- A producer that read a rate limiter refusal as a reason to stop. Every
+  producer exited and the cell reported 0 tasks per second.
+- A worker sweep that stopped before the peak, so the best worker count sat
+  at the edge of the range.
+- A cell with a handful of completions that passed as valid.
+- A drain prefill so large that the slow stages became unmeasurable.
+
 ## Sizing a drain run
 
 A drain run consumes its prefill and never refills. The prefill must exceed

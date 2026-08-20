@@ -154,20 +154,6 @@ Dequeue runs more than twice as fast as enqueue. A single row insert is one
 transaction and one write-ahead log flush. The insert side becomes the
 expensive half as soon as it stops batching. The 5 minute numbers follow.
 
-## Why these numbers should be believed
-
-Every cell passes four checks before it reports, and the report shows the
-cells that fail instead of charting them. Tasks in flight must match
-throughput times mean task duration. The window must hold at least 1000
-completions. Empty claims must stay under 5 percent. The queue length must
-hold steady, and it did: it started at 1,000,000 and ended between 1,001,651
-and 1,095,287 in every stage.
-
-A second measurement mode fills the queue and then consumes it, with no
-producer and no controller running. It agrees with the numbers above within
-4 to 16 percent on every stage. Neither the producer load nor the controller
-shapes the result.
-
 ## Other engines
 
 CockroachDB, on three nodes with replication factor 3, was not promising on
