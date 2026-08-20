@@ -13,13 +13,20 @@ changed, the machine changed, and the two benchmarks reported different
 columns. A reader could not put two numbers beside each other and trust the
 comparison.
 
-This document fixes the steps, the environments, and the two benchmarks. It
-also fixes the tables and the charts, which are the same for both
-benchmarks.
+This document fixes the steps and the two benchmarks. It also fixes the
+tables and the charts, which are the same for both benchmarks.
 
 ## Steps
 
-Seven steps. Each keeps every change of the step above it.
+Ten steps. Each keeps every change of the step above it.
+
+Steps 0 to 6 change the queue. They all run on a podman container with the
+virtual machine set to 2 CPUs, so the queue design is measured against one
+machine.
+
+Steps 7 to 9 change nothing about the queue. They take step 6 and give it
+more machine. This separates what the design bought from what the hardware
+bought.
 
 | Step | Change | Source |
 | --- | --- | --- |
@@ -30,17 +37,9 @@ Seven steps. Each keeps every change of the step above it.
 | 4. `synchronous_commit = off` | The commit returns before the flush | ours |
 | 5. One statement per claim | One CTE replaces a transaction of two statements | ours |
 | 6. Shard the queue head | A `shard` column, one pinned worker set per shard | ours |
-
-## Environments
-
-Four, in this order. Every step runs in every environment.
-
-| Environment | Postgres runs in |
-| --- | --- |
-| 1. VM, 2 CPUs | a podman container, virtual machine set to 2 CPUs |
-| 2. VM, 4 CPUs | a podman container, virtual machine set to 4 CPUs |
-| 3. VM, 8 CPUs | a podman container, virtual machine set to 8 CPUs |
-| 4. Metal | the host, no container and no virtual machine |
+| 7. Twice the CPUs | The virtual machine goes from 2 CPUs to 4 | ours |
+| 8. Twice the CPUs again | The virtual machine goes from 4 CPUs to 8 | ours |
+| 9. Leave the virtual machine | Postgres runs on the host, with no container | ours |
 
 ## Benchmarks
 
@@ -56,40 +55,37 @@ task runs for a random 10 to 20 seconds and holds a slot, not a connection.
 
 ## The matrix
 
-2 benchmarks x 7 steps x 4 environments = 56 cells.
+2 benchmarks x 10 steps = 20 cells.
 
 Each cell runs a 5 minute window after its warm-up, so a cell costs about
-6 minutes. The run costs about 6 hours, plus the time to restart the virtual
-machine between environments.
-
-CONSIDER(ali): the worker count stays fixed per step across environments,
-taken from the sweep. A machine with 2 CPUs may peak at a different count
-than one with 8. Sweeping the count in every environment would multiply the
-matrix by 4 again.
+6 minutes. The run costs about 2 hours, plus the time to restart the virtual
+machine at steps 7, 8, and 9.
 
 ## The tables
 
-Both benchmarks use this table, one row per step and one column per
-environment.
+Both benchmarks use this table, one row per step.
 
-| Step | VM 2 CPUs | VM 4 CPUs | VM 8 CPUs | Metal |
-| --- | ---: | ---: | ---: | ---: |
+| Step | rate | Gain | 1B tasks |
+| --- | ---: | ---: | ---: |
 
 ## The charts
 
-Both benchmarks use this chart, one per environment. The bar is a log scale
-at three marks per doubling. The last column is one billion divided by the
+Both benchmarks use this chart. The bar is a log scale at three marks per
+doubling. The last column is one billion divided by the
 rate, which is arithmetic and not a forecast.
 
 ```
                     log scale, three marks per doubling           1B tasks
-  0 vanilla        ║
-  1 SKIP LOCKED    ║
-  2 READ COMMITTED ║
-  3 partial index  ║
-  4 async commit   ║
-  5 one statement  ║
-  6 sharded        ║
+  0 vanilla        ║                                          —          —
+  1 SKIP LOCKED    ║                                          —          —
+  2 READ COMMITTED ║                                          —          —
+  3 partial index  ║                                          —          —
+  4 async commit   ║                                          —          —
+  5 one statement  ║                                          —          —
+  6 sharded        ║                                          —          —
+  7 VM, 4 CPUs     ║                                          —          —
+  8 VM, 8 CPUs     ║                                          —          —
+  9 metal          ║                                          —          —
 ```
 
 ## Rules that do not change
@@ -102,6 +98,7 @@ rate, which is arithmetic and not a forecast.
 
 ## Open questions
 
-- CONSIDER(ali): the worker count per step, fixed across environments.
+- CONSIDER(ali): the worker count per step. Steps 7 to 9 keep the count that
+  step 6 used, so a larger machine may be measured below its best.
 - CONSIDER(ali): whether the 2 CPU virtual machine can hold the connections
   that step 6 needs at 64 claim loops.
