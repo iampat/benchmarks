@@ -1,8 +1,9 @@
 # Scaling a Postgres task queue
 
-**Status: benchmark 2 is complete. Benchmark 1 is still running.** Every
-number below carries a full 5 minute window at the stage's best worker
-count. Every cell passed the steady-state checks.
+**Status: both benchmarks measured.** One cell is still running, the drain
+run of stage 7, and the repeats that give an error bar. Every number below
+carries a 5 minute window at the stage's best worker count, and passed the
+steady-state checks.
 
 ## The problem
 
@@ -34,7 +35,7 @@ checks a cell passes before it reports a number.
 ## Results
 
 Benchmark 2, the steady-state task queue. Each stage runs at its best worker
-count over a 5 minute window.
+count. The queue held 1,000,000 tasks throughout, in every stage.
 
 | Step | tasks/s | Gain | Workers | Claim p95 | Retries | From |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
@@ -62,6 +63,28 @@ whole ladder is 2,900x.
   7 batched completion ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  38,904
 ```
 
+## Two benchmarks, one answer
+
+Benchmark 1 fills the queue and then consumes it, with no producer running
+and no controller. Benchmark 2 runs inserts and claims together and holds
+the queue length steady. The two share almost nothing, so agreement between
+them is evidence that neither the producer load nor the controller shapes
+the result.
+
+| Stage | Benchmark 2 | Benchmark 1 | Difference |
+| --- | ---: | ---: | ---: |
+| 0. naive claim query | 13.4 | 14.4 | 7% |
+| 1. `SKIP LOCKED` | 14.0 | 14.6 | 4% |
+| 2. `READ COMMITTED` | 13.7 | 15.9 | 16% |
+| 3. partial covering index | 14,112 | 13,394 | -5% |
+| 4. async commit | 14,854 | 14,026 | -6% |
+| 5. one statement per claim | 16,296 | 15,394 | -6% |
+| 6. sharded | 34,194 | 30,864 | -10% |
+
+Benchmark 1 reads a little lower from stage 3 on. Its queue holds several
+million tasks rather than one million, so its index is larger and each claim
+reads more.
+
 ## A short run overstates the result
 
 The same stages measured over a 30 second window read far higher.
@@ -78,10 +101,9 @@ versions by the end, autovacuum runs hard, and the index grows. A 30 second
 window finishes before any of that starts.
 
 The short numbers are not wrong. They measure a queue that has just started.
-The 5 minute numbers measure a queue that has been running, which is the
-number to plan with.
+The 5 minute numbers measure a queue that has been running.
 
-The peak worker count moves too. Over 30 seconds the sharded stage looked
+The best worker count moves too. Over 30 seconds the sharded stage looked
 fastest at 128 claim loops. Over 5 minutes 64 wins, and 128 is 20 percent
 slower.
 
