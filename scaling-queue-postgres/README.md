@@ -75,15 +75,21 @@ The article's path gives 1030x. The steps past it give another 2.4x. The
 whole ladder is 2,550x.
 
 ```
-                    log scale, three marks per doubling
-  0 vanilla          ║░                                         13
-  1 SKIP LOCKED      ║░                                         14
-  2 READ COMMITTED   ║░                                         13
-  3 partial index    ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░       14,112
-  4 async commit     ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░       14,854
-  5 one statement    ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░      16,296
-  6 sharded          ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   34,194
+                  log scale, three marks per doubling    1B tasks
+  0 vanilla         ║░                                    13   2.4 years
+  1 SKIP LOCKED     ║░                                    14   2.3 years
+  2 READ COMMITTED  ║░                                    13   2.3 years
+  3 partial index   ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  14,112    20 hours
+  4 async commit    ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  14,854    19 hours
+  5 one statement   ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 16,296    17 hours
+  6 sharded         ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 34,194    8 hours
 ```
+
+The last column divides one billion by the measured rate. It is arithmetic,
+not a forecast. A queue that ran for hours would carry far more dead rows
+than a 5 minute window builds. The section on window length shows what that
+costs. Read the column as a floor.
+
 
 ## The partial covering index
 
