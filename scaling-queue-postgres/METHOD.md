@@ -27,23 +27,27 @@ divided by 15 seconds, which measures the sleep instead of Postgres.
 One deadline heap holds every running task. One goroutine and one timer per
 task would cost more than the database at 300,000 tasks in flight.
 
-## The two benchmarks
+## Modes
 
-| Benchmark | Mode flag | Shape |
-| --- | --- | --- |
-| 1. simple queue | `-mode=drain` | Insert the whole backlog, then consume it. Producers stay idle during the window, so the queue only shrinks. |
-| 2. task queue | `-mode=steady` | Insert, claim, and complete run together. A controller holds the queue length near a target. |
+| Mode | Shape |
+| --- | --- |
+| `-mode=steady` | The benchmark. Inserts, claims, and completions run together while a controller holds the queue length near a target. |
+| `-mode=drain` | A cross-check. Insert the whole backlog, then consume it with no producer and no controller running. |
+| `-mode=ops` | Queue operations on their own. One group of loops enqueues a single row per statement, another claims a single row per statement. No task runs and nothing writes DONE. |
 
-The two answer the same question by different routes, so they check each
-other. Benchmark 1 measures capacity with no producer competing for CPU.
-Benchmark 2 measures the rate the queue sustains while its length stays
-steady. A large gap between them means one of the two is wrong.
+The report uses `steady`. `drain` reaches the same answer by a different
+route. Agreement between them is evidence that neither the producer load nor
+the controller shapes the result. A large gap would mean one is wrong.
 
-In benchmark 2 the controller sets the insert rate to the measured
-completion rate, plus a correction for the error in queue length. The
-correction uses a gain of 0.2 per second, and a rate limiter paces the
-inserts. A queue that swings instead of settling shows up in the recorded
-queue variation.
+In `steady` the controller sets the insert rate to the measured completion
+rate, plus a correction for the error in queue length. The correction uses a
+gain of 0.2 per second, and a rate limiter paces the inserts. A queue that
+swings instead of settling shows up in the recorded queue variation.
+
+`ops` measures the enqueue and claim statements alone. It reports the two
+rates apart and together, and samples the queue length every 10 seconds.
+The queue starts empty and finds its own length, so that length shows which
+side of the queue is faster.
 
 ## Stages
 
@@ -82,39 +86,44 @@ costs, because a claim and a completion are one statement each.
 ## Run
 
 The bench command starts a throwaway `postgres:18` container with podman and
-runs the selected cells. Each cell writes one JSON file into `results/`.
+runs the selected cells. Each cell appends one line to
+`results/results.jsonl`.
 
 ```sh
-task scaling-queue-postgres:bench -- -mode=steady    # benchmark 2
-task scaling-queue-postgres:bench -- -mode=drain     # benchmark 1
-task scaling-queue-postgres:bench -- -dsn=postgres://…   # an existing server
-task scaling-queue-postgres:bench:quick              # 20 second smoke run
-task scaling-queue-postgres:report                   # build results/REPORT.md
+task scaling-queue-postgres:bench -- -mode=steady         # the benchmark
+task scaling-queue-postgres:bench -- -mode=drain          # the cross-check
+task scaling-queue-postgres:bench -- -mode=ops            # queue operations
+task scaling-queue-postgres:bench -- -dsn=postgres://…    # an existing server
+task scaling-queue-postgres:bench:quick                   # 20 second smoke run
+task scaling-queue-postgres:report                        # build results/REPORT.md
 ```
 
 ## Flags that shape a run
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `-mode` | steady | `drain` or `steady` |
+| `-mode` | steady | `steady`, `drain`, or `ops` |
 | `-stages` | all | Which stages to run |
 | `-workers` | 16,32 | Claim loops to sweep |
-| `-completers` | 32 | Goroutines that write DONE |
-| `-shards` | 32 | Shard count for the sharded stages |
-| `-slots` | 900000 | Maximum tasks in flight |
+| `-completers` | 128 | Goroutines that write DONE |
+| `-shards` | 0 | Shards for the sharded stages, 0 means one per claim loop |
+| `-slots` | 3000000 | Maximum tasks in flight |
 | `-batch` | 1 | Tasks per claim |
 | `-create-batch` | 1000 | Rows per insert |
 | `-duration-min` | 10s | Shortest task duration |
 | `-duration-max` | 20s | Longest task duration |
-| `-target-backlog` | 200000 | Queue length the controller holds |
-| `-prefill` | 6000000 | Rows inserted before a drain run |
+| `-target-backlog` | 1000000 | Queue length the controller holds |
+| `-prefill` | 2000000 | Rows inserted before a drain run |
 | `-warmup` | 60s | Discarded time before the window |
 | `-window` | 5m | Measurement window |
 | `-producers` | 4 | Producer goroutines, steady mode only |
+| `-enqueuers` | 16 | Enqueue loops, ops mode only |
+| `-queue-sample` | 10s | Queue length sampling interval, ops mode |
 
 The warm-up must exceed the longest task duration, and the command refuses
 to start otherwise. Tasks in flight need one full task duration to reach a
-steady state, so a shorter warm-up would measure a filling pipeline.
+steady state. A shorter warm-up would measure a filling pipeline. The rule
+does not apply to `ops`, where no task runs.
 
 ## How a cell proves it measured something
 
@@ -122,6 +131,9 @@ A cell reports a number only when the run reached a steady state. Each check
 below marks the cell invalid, and the report shows invalid cells instead of
 charting them.
 
+- **A minimum sample.** A window must hold 1000 completions. The relative
+  error on a count falls off as 1/sqrt(N), so 1000 holds it near 3 percent.
+  Below that a cell cannot measure a rate.
 - **Little's Law.** Tasks in flight must equal throughput times mean task
   duration, within 10 percent. A run that misses it was still filling or
   draining its pipeline, whatever its throughput says. This is the strongest
@@ -139,10 +151,17 @@ charting them.
 ## Sizing a drain run
 
 A drain run consumes its prefill and never refills. The prefill must exceed
-the rate times the warm-up plus the window. A 5 minute window at 20,000
-tasks per second needs about 7 million rows. Every stage gets the same
-prefill, because a different table size would change the claim cost and make
-the stages incomparable.
+the rate times the warm-up plus the window. It must also leave the queue
+deep enough that the claim cost does not change while the window runs.
+
+One prefill cannot serve a stage claiming 13 tasks per second and one
+claiming 39,000. Each stage group gets a prefill sized from its measured
+rate. Stages 0 to 2 get 1 million rows, stages 3 to 5 get 8 million, and
+stages 6 and 7 get 24 million. Every group starts from the same queue depth
+of 1 million, and the rest is fuel.
+
+Drain numbers compare inside a group. The `steady` benchmark holds the same
+1 million queue in every stage, so it is the comparison across stages.
 
 ## Integration test
 
@@ -171,8 +190,13 @@ Postgres runs inside a virtual machine, and the disk, network, and CPU
 limits of that machine bound the result. A native server removes that layer.
 Compare stages inside one environment section, never across two.
 
-Each result file records the server version, the settings, the hardware, the
-git commit, and the exact command.
+Results append one line per cell to `results/results.jsonl`. Each line
+records the server version, the settings, the hardware, the git commit, and
+the exact command. `results/sweep.jsonl` holds the 30 second sweeps that
+locate each stage's best worker count.
+
+Repeated runs of the same cell vary by about 2 percent. A difference under
+4 percent is not a difference.
 
 Latency percentiles are closed-loop service times. The claim loops are the
 system under test, so these numbers do not model open-load response times.

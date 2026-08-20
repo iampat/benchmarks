@@ -1,10 +1,5 @@
 # Scaling a Postgres task queue
 
-**Status: both benchmarks measured.** One cell is still running, the drain
-run of stage 7, and the repeats that give an error bar. Every number below
-carries a 5 minute window at the stage's best worker count, and passed the
-steady-state checks.
-
 ## The problem
 
 A task queue in Postgres is one table. A producer inserts a row with status
@@ -20,28 +15,31 @@ The DBOS article
 removes three of these costs. This benchmark replicates that path on one
 machine, then goes past it.
 
-## The workload
+## The benchmark
 
-A worker claims one task, and a completer finishes one task. Only the
-inserts batch, at 1000 rows. Every task runs for a random 10 to 20 seconds,
-and holds a slot rather than a database connection while it runs.
+Producers, workers, and completers all run together, and a controller holds
+the queue length at 1,000,000 tasks. A worker claims one task, and a
+completer finishes one task. Only the inserts batch, at 1000 rows. Every
+task runs for a random 10 to 20 seconds, and holds a slot rather than a
+database connection while it runs.
 
 One claim and one completion are one statement each, so a task costs two
 statements. Claiming one at a time is what a worker that runs one task does.
 
-[METHOD.md](METHOD.md) covers the harness, the two benchmark modes, and the
-checks a cell passes before it reports a number.
+Each stage runs a 5 minute window at its best worker count. Repeated runs of
+the same cell vary by about 2 percent, so a difference under 4 percent is
+not a difference.
+
+[METHOD.md](METHOD.md) covers the harness and the checks a cell passes
+before it reports a number.
 
 ## Results
-
-Benchmark 2, the steady-state task queue. Each stage runs at its best worker
-count. The queue held 1,000,000 tasks throughout, in every stage.
 
 | Step | tasks/s | Gain | Workers | Claim p95 | Retries | From |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
 | 0. Naive claim query | 13.4 | — | 8 | 668 ms | 202 | article |
-| 1. `SKIP LOCKED` | 14.0 | 1.0x | 8 | 658 ms | 226 | article |
-| 2. `READ COMMITTED` | 13.7 | 1.0x | 16 | 1,279 ms | 0 | article |
+| 1. `SKIP LOCKED` | 14.0 | none | 8 | 658 ms | 226 | article |
+| 2. `READ COMMITTED` | 13.7 | none | 16 | 1,279 ms | 0 | article |
 | 3. Partial covering index | 14,112 | 1030x | 16 | 1.9 ms | 0 | article |
 | 4. `synchronous_commit = off` | 14,854 | 1.05x | 16 | 1.9 ms | 0 | this benchmark |
 | 5. One statement per claim | 16,296 | 1.10x | 16 | 1.9 ms | 0 | this benchmark |
@@ -63,56 +61,13 @@ whole ladder is 2,900x.
   7 batched completion ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  38,904
 ```
 
-## Two benchmarks, one answer
-
-Benchmark 1 fills the queue and then consumes it, with no producer running
-and no controller. Benchmark 2 runs inserts and claims together and holds
-the queue length steady. The two share almost nothing, so agreement between
-them is evidence that neither the producer load nor the controller shapes
-the result.
-
-| Stage | Benchmark 2 | Benchmark 1 | Difference |
-| --- | ---: | ---: | ---: |
-| 0. naive claim query | 13.4 | 14.4 | 7% |
-| 1. `SKIP LOCKED` | 14.0 | 14.6 | 4% |
-| 2. `READ COMMITTED` | 13.7 | 15.9 | 16% |
-| 3. partial covering index | 14,112 | 13,394 | -5% |
-| 4. async commit | 14,854 | 14,026 | -6% |
-| 5. one statement per claim | 16,296 | 15,394 | -6% |
-| 6. sharded | 34,194 | 30,864 | -10% |
-
-Benchmark 1 reads a little lower from stage 3 on. Its queue holds several
-million tasks rather than one million, so its index is larger and each claim
-reads more.
-
-## A short run overstates the result
-
-The same stages measured over a 30 second window read far higher.
-
-| Stage | 30 seconds | 5 minutes | Overstatement |
-| --- | ---: | ---: | ---: |
-| 5. one statement | 23,501 | 16,296 | 44 percent |
-| 6. sharded | 61,338 | 34,194 | 79 percent |
-| 7. batched completion | 69,273 | 38,904 | 78 percent |
-
-At 35,000 tasks per second a 5 minute window moves 10 million tasks, and
-each task writes three row versions. The table carries 30 million row
-versions by the end, autovacuum runs hard, and the index grows. A 30 second
-window finishes before any of that starts.
-
-The short numbers are not wrong. They measure a queue that has just started.
-The 5 minute numbers measure a queue that has been running.
-
-The best worker count moves too. Over 30 seconds the sharded stage looked
-fastest at 128 claim loops. Over 5 minutes 64 wins, and 128 is 20 percent
-slower.
-
 ## The first two fixes buy nothing here
 
 Stages 0, 1, and 2 measure 13.4, 14.0, and 13.7 tasks per second. Those
-three numbers are the same number. The article's first two optimizations
-bought 50 percent and 80 percent when a claim took 10 tasks. At one task per
-claim they buy nothing.
+three numbers sit inside the 2 percent that repeated runs vary by, so they
+are one number. The article's first two optimizations bought 50 percent and
+80 percent when a claim took 10 tasks. At one task per claim they buy
+nothing.
 
 The reason is `LIMIT 1`. Every worker asks for the single oldest row, so
 `SKIP LOCKED` only moves a worker onto the row that the next worker already
@@ -162,8 +117,56 @@ splits that head, and the shape changes.
 | 7. batched completion | 55,790 | 63,315 | **69,273** | 67,406 | 51,720 | 36,677 |
 
 Both sweeps run past their peak and come back down, so neither peak sits at
-the edge of the range. These rows locate the peak. The 5 minute runs in the
-results table measure it.
+the edge of the range.
+
+## A short run overstates the result
+
+The same stages measured over a 30 second window read far higher.
+
+| Stage | 30 seconds | 5 minutes | Overstatement |
+| --- | ---: | ---: | ---: |
+| 5. one statement | 23,501 | 16,296 | 44 percent |
+| 6. sharded | 61,338 | 34,194 | 79 percent |
+| 7. batched completion | 69,273 | 38,904 | 78 percent |
+
+At 35,000 tasks per second a 5 minute window moves 10 million tasks, and
+each task writes three row versions. The table carries 30 million row
+versions by the end, autovacuum runs hard, and the index grows. A 30 second
+window finishes before any of that starts.
+
+The short numbers are not wrong. They measure a queue that has just started.
+The 5 minute numbers measure a queue that has been running.
+
+The best worker count moves too. Over 30 seconds the sharded stage looked
+fastest at 128 claim loops. Over 5 minutes 64 wins, and 128 is 20 percent
+slower.
+
+## Queue operations on their own
+
+**This run is in progress.** A second measurement drops the task entirely.
+One group of loops inserts a single row per statement, and another group
+claims a single row per statement. Nothing runs, and nothing writes `DONE`,
+so a claim is the whole operation. The queue starts empty and finds its own
+length.
+
+A 20 second trial gives 30,919 enqueues and 69,066 claims per second.
+Dequeue runs more than twice as fast as enqueue. A single row insert is one
+transaction and one write-ahead log flush. The insert side becomes the
+expensive half as soon as it stops batching. The 5 minute numbers follow.
+
+## Why these numbers should be believed
+
+Every cell passes four checks before it reports, and the report shows the
+cells that fail instead of charting them. Tasks in flight must match
+throughput times mean task duration. The window must hold at least 1000
+completions. Empty claims must stay under 5 percent. The queue length must
+hold steady, and it did: it started at 1,000,000 and ended between 1,001,651
+and 1,095,287 in every stage.
+
+A second measurement mode fills the queue and then consumes it, with no
+producer and no controller running. It agrees with the numbers above within
+4 to 16 percent on every stage. Neither the producer load nor the controller
+shapes the result.
 
 ## Other engines
 
