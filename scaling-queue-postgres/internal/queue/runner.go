@@ -396,3 +396,65 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 		return nil
 	}
 }
+
+// RunEnqueuer inserts one row per statement, as fast as the server allows.
+// The operations benchmark measures enqueue and claim as bare operations, so
+// nothing paces this loop.
+func RunEnqueuer(ctx context.Context, e Creator, c *Counters) error {
+	for {
+		if ctx.Err() != nil {
+			return nil
+		}
+		if err := e.Create(ctx, 1); err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return err
+		}
+		c.Created.Add(1)
+	}
+}
+
+// RunDequeuer claims one row per statement and then forgets it. No task runs
+// and nothing writes DONE, so a claim is the whole operation.
+func RunDequeuer(ctx context.Context, q Claimer, cfg WorkerConfig, c *Counters) error {
+	sleep := cfg.Sleep
+	if sleep == nil {
+		sleep = sleepCtx
+	}
+	for {
+		if ctx.Err() != nil {
+			return nil
+		}
+		start := time.Now()
+		var ids []int64
+		for attempt := 1; ; attempt++ {
+			var err error
+			ids, err = q.Claim(ctx)
+			if err == nil {
+				break
+			}
+			if ctx.Err() != nil {
+				return nil
+			}
+			if !Retryable(err) {
+				return err
+			}
+			c.Retries.Add(1)
+			if sleep(ctx, cfg.Backoff.delay(attempt)) != nil {
+				return nil
+			}
+		}
+		if len(ids) == 0 {
+			c.EmptyClaims.Add(1)
+			if sleep(ctx, cfg.EmptyPollInterval) != nil {
+				return nil
+			}
+			continue
+		}
+		if cfg.Record != nil {
+			cfg.Record(time.Since(start))
+		}
+		c.Claimed.Add(int64(len(ids)))
+	}
+}

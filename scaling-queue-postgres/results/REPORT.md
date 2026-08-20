@@ -6,9 +6,11 @@
 - Command: `bench -dsn=postgres://postgres@127.0.0.1:55444/postgres -mode=drain -stages=0-vanilla,1-skip-locked,2-read-committed -workers=16 -prefill=1000000`
 - Command: `bench -dsn=postgres://postgres@127.0.0.1:55444/postgres -mode=drain -stages=3-partial-index,4-async-commit,5-single-statement -workers=16 -prefill=8000000`
 - Command: `bench -dsn=postgres://postgres@127.0.0.1:55444/postgres -mode=drain -stages=6-sharded,7-batched-completion -workers=64 -prefill=18000000`
+- Command: `bench -dsn=postgres://postgres@127.0.0.1:55444/postgres -mode=drain -stages=7-batched-completion -workers=64 -prefill=24000000 -repeat=3`
 - Command: `bench -dsn=postgres://postgres@127.0.0.1:55444/postgres -mode=steady -stages=0-vanilla,1-skip-locked,2-read-committed -workers=8,16`
 - Command: `bench -dsn=postgres://postgres@127.0.0.1:55444/postgres -mode=steady -stages=3-partial-index,4-async-commit,5-single-statement -workers=16`
 - Command: `bench -dsn=postgres://postgres@127.0.0.1:55444/postgres -mode=steady -stages=6-sharded,7-batched-completion -workers=64,128`
+- Command: `bench -dsn=postgres://postgres@127.0.0.1:55444/postgres -mode=steady -stages=7-batched-completion -workers=64 -repeat=2`
 - Settings: autovacuum=on, autovacuum_naptime=1min, fsync=on, max_connections=1200, shared_buffers=128MB, synchronous_commit=on
 
 ### Benchmark 1, simple queue (insert everything, then consume)
@@ -29,6 +31,7 @@
 | stage | tasks/s | vs prev | claim p50 | claim p95 | done p95 | in flight | Little err | retries | runs |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | 6-sharded | 30864 | — | 0.68 ms | 7.24 ms | 5.30 ms | 448655 | 3.1% | 0 | 1 |
+| 7-batched-completion | 33241 | +8% | 0.60 ms | 7.06 ms | 7.24 ms | 500279 | 2.1% | 0 | 3 |
 
 ### Benchmark 2, task queue (insert, claim, and complete together)
 
@@ -56,7 +59,7 @@
 | stage | tasks/s | vs prev | claim p50 | claim p95 | done p95 | in flight | Little err | retries | runs |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | 6-sharded | 34193 | — | 0.65 ms | 6.50 ms | 3.93 ms | 508067 | 0.9% | 0 | 1 |
-| 7-batched-completion | 38904 | +14% | 0.53 ms | 4.99 ms | 7.25 ms | 570358 | 2.3% | 0 | 1 |
+| 7-batched-completion | 38322 | +12% | 0.53 ms | 5.21 ms | 5.88 ms | 564390 | 1.9% | 0 | 3 |
 
 #### 128 claim loops
 

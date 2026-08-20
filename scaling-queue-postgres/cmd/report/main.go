@@ -28,14 +28,7 @@ func run() error {
 
 	paths := flag.Args()
 	if len(paths) == 0 {
-		var err error
-		paths, err = filepath.Glob(filepath.Join(*dir, "*.json"))
-		if err != nil {
-			return err
-		}
-	}
-	if len(paths) == 0 {
-		return fmt.Errorf("no result files in %s", *dir)
+		paths = []string{filepath.Join(*dir, benchreport.ResultsFile)}
 	}
 
 	results, err := benchreport.ReadResults(paths)

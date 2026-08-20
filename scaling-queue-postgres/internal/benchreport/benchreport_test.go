@@ -88,18 +88,31 @@ func TestResultRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasSuffix(path, "20260818T120000-steady-1-skip-locked-w16.json") {
+	if !strings.HasSuffix(path, benchreport.ResultsFile) {
 		t.Errorf("unexpected file name %s", path)
+	}
+	// A second cell appends rather than replacing the first.
+	second := want
+	second.Stage = "2-read-committed"
+	second.ThroughputPerSec = 99
+	if _, err := benchreport.WriteResult(dir, second); err != nil {
+		t.Fatal(err)
 	}
 	got, err := benchreport.ReadResults([]string{path})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].ThroughputPerSec != want.ThroughputPerSec ||
+	if len(got) != 2 {
+		t.Fatalf("read %d results, want 2", len(got))
+	}
+	if got[0].ThroughputPerSec != want.ThroughputPerSec ||
 		got[0].Stage != want.Stage || got[0].Mode != want.Mode ||
 		got[0].MeanInFlight != want.MeanInFlight ||
 		!got[0].StartedAt.Equal(want.StartedAt) {
-		t.Errorf("round trip = %+v, want %+v", got, want)
+		t.Errorf("round trip = %+v, want %+v", got[0], want)
+	}
+	if got[1].Stage != second.Stage || got[1].ThroughputPerSec != second.ThroughputPerSec {
+		t.Errorf("appended result = %+v, want %+v", got[1], second)
 	}
 }
 

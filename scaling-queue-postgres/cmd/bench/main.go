@@ -32,6 +32,8 @@ type config struct {
 	stages         []queue.Stage
 	workers        []int
 	completers     int
+	enqueuers      int
+	queueSample    time.Duration
 	slots          int
 	shards         int
 	batch          int
@@ -132,7 +134,7 @@ func run() error {
 	for _, w := range cfg.workers {
 		maxWorkers = max(maxWorkers, w)
 	}
-	if need := maxWorkers + cfg.completers + cfg.producers + 16; need > maxConns {
+	if need := maxWorkers + cfg.completers + cfg.producers + cfg.enqueuers + 16; need > maxConns {
 		return fmt.Errorf("need %d connections but server max_connections is %d", need, maxConns)
 	}
 
@@ -225,6 +227,10 @@ func runCell(ctx context.Context, ctl *queue.Store, dsn string, st queue.Stage,
 		return res, err
 	}
 	defer pstore.Close()
+
+	if cfg.mode == "ops" {
+		return runOpsCell(ctx, ctl, res, wstore, pstore, st, workers, shards, cfg)
+	}
 
 	var counters queue.Counters
 	claimRec := benchreport.NewRecorder(workers)
@@ -415,6 +421,120 @@ func runCell(ctx context.Context, ctl *queue.Store, dsn string, st queue.Stage,
 	return res, nil
 }
 
+// runOpsCell measures enqueue and claim as bare operations. No task runs, so
+// nothing writes DONE and nothing sits in flight. The queue length is the
+// second result, because it shows which side of the queue is faster.
+func runOpsCell(ctx context.Context, ctl *queue.Store, res benchreport.Result,
+	wstore, pstore *queue.Store, st queue.Stage, workers, shards int, cfg config,
+) (benchreport.Result, error) {
+	var counters queue.Counters
+	claimRec := benchreport.NewRecorder(workers)
+
+	cellCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	errs := make(chan error, workers+cfg.enqueuers)
+	var wg sync.WaitGroup
+
+	for i := 0; i < cfg.enqueuers; i++ {
+		eq := queue.StageQueue{Store: pstore, Stage: st, Queue: queueName, Shards: shards}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- queue.RunEnqueuer(cellCtx, eq, &counters)
+		}()
+	}
+	for i := 0; i < workers; i++ {
+		lane := claimRec.Lane(i)
+		dq := queue.StageQueue{
+			Store: wstore, Stage: st, Queue: queueName, Batch: 1,
+			Shard: i % shards, Shards: shards,
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- queue.RunDequeuer(cellCtx, dq, queue.WorkerConfig{
+				Backoff:           queue.BackoffConfig{Base: time.Millisecond, Max: 100 * time.Millisecond},
+				EmptyPollInterval: time.Millisecond,
+				Record:            lane.Record,
+			}, &counters)
+		}()
+	}
+
+	waitErr := wait(cellCtx, cfg.warmup)
+	createdStart := counters.Created.Load()
+	claimedStart := counters.Claimed.Load()
+	emptyStart := counters.EmptyClaims.Load()
+	retriesStart := counters.Retries.Load()
+	windowStart := time.Now()
+	claimRec.SetRecording(true)
+
+	depth := func() int64 {
+		return int64(res.BacklogStart) + counters.Created.Load() - counters.Claimed.Load()
+	}
+	s := newSampler(&counters, depth)
+	sampleCtx, stopSampler := context.WithCancel(cellCtx)
+	go s.run(sampleCtx, cfg.queueSample)
+
+	if waitErr == nil {
+		waitErr = wait(cellCtx, cfg.window)
+	}
+	elapsed := time.Since(windowStart)
+	stopSampler()
+	claimRec.SetRecording(false)
+
+	res.EnqueueOps = counters.Created.Load() - createdStart
+	res.DequeueOps = counters.Claimed.Load() - claimedStart
+	res.EmptyClaims = counters.EmptyClaims.Load() - emptyStart
+	res.Retries = counters.Retries.Load() - retriesStart
+	cancel()
+
+	drained := make(chan struct{})
+	go func() { wg.Wait(); close(drained) }()
+	timer := time.NewTimer(60 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-drained:
+	case <-timer.C:
+		return res, errors.New("loops did not stop within 60s")
+	}
+	if waitErr != nil {
+		return res, waitErr
+	}
+	close(errs)
+	for e := range errs {
+		if e != nil {
+			return res, e
+		}
+	}
+
+	res.CompletedTasks = res.DequeueOps
+	res.ThroughputPerSec = float64(res.DequeueOps) / elapsed.Seconds()
+	res.EnqueuePerSec = float64(res.EnqueueOps) / elapsed.Seconds()
+	res.OpsPerSec = res.ThroughputPerSec + res.EnqueuePerSec
+	claim := benchreport.Percentiles(claimRec.Samples())
+	res.SampleCount = claim.Count
+	res.P50Millis = float64(claim.P50) / float64(time.Millisecond)
+	res.P95Millis = float64(claim.P95) / float64(time.Millisecond)
+	res.P99Millis = float64(claim.P99) / float64(time.Millisecond)
+	res.MeanBacklog = s.meanBacklog()
+	res.BacklogVariationPercent = s.backlogVariationPercent()
+
+	end, err := ctl.Backlog(ctx, queueName)
+	if err != nil {
+		return res, err
+	}
+	res.BacklogEnd = end
+
+	res.Valid = true
+	if res.DequeueOps < 1000 || res.EnqueueOps < 1000 {
+		res.Valid = false
+		res.InvalidReasons = append(res.InvalidReasons,
+			fmt.Sprintf("only %d enqueues and %d dequeues, too few to measure",
+				res.EnqueueOps, res.DequeueOps))
+	}
+	return res, nil
+}
+
 type sampler struct {
 	counters *queue.Counters
 	backlog  func() int64
@@ -550,6 +670,8 @@ func parseFlags(args []string) (config, error) {
 	cfg := config{}
 	fs.StringVar(&cfg.mode, "mode", "steady", "drain or steady")
 	fs.IntVar(&cfg.completers, "completers", 128, "goroutines that write DONE")
+	fs.IntVar(&cfg.enqueuers, "enqueuers", 16, "enqueue loops, ops mode only")
+	fs.DurationVar(&cfg.queueSample, "queue-sample", 10*time.Second, "queue length sampling interval, ops mode")
 	fs.IntVar(&cfg.slots, "slots", 3_000_000, "maximum tasks in flight")
 	fs.IntVar(&cfg.shards, "shards", 0, "shards for the sharded stages, 0 means one per claim loop")
 	fs.IntVar(&cfg.batch, "batch", 1, "tasks per claim")
@@ -572,8 +694,8 @@ func parseFlags(args []string) (config, error) {
 		return cfg, err
 	}
 
-	if cfg.mode != "drain" && cfg.mode != "steady" {
-		return cfg, fmt.Errorf("mode must be drain or steady, got %q", cfg.mode)
+	if cfg.mode != "drain" && cfg.mode != "steady" && cfg.mode != "ops" {
+		return cfg, fmt.Errorf("mode must be drain, steady, or ops, got %q", cfg.mode)
 	}
 	if *stages == "all" {
 		cfg.stages = queue.Stages()
@@ -595,7 +717,7 @@ func parseFlags(args []string) (config, error) {
 		cfg.workers = append(cfg.workers, w)
 	}
 	// Tasks in flight need one full task duration to reach a steady state.
-	if cfg.warmup <= cfg.durationMax {
+	if cfg.mode != "ops" && cfg.warmup <= cfg.durationMax {
 		return cfg, fmt.Errorf("warmup %v must exceed the longest task duration %v",
 			cfg.warmup, cfg.durationMax)
 	}
