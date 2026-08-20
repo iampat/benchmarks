@@ -383,8 +383,9 @@ func runCell(ctx context.Context, ctl *queue.Store, dsn string, st queue.Stage,
 		res.Valid = false
 		res.InvalidReasons = append(res.InvalidReasons, reason)
 	}
-	if res.CompletedTasks == 0 {
-		invalid("no completions in window")
+	if res.CompletedTasks < 1000 {
+		invalid(fmt.Sprintf("only %d completions in the window, too few to measure",
+			res.CompletedTasks))
 	}
 	if claims := res.CompletedTasks; claims > 0 && res.EmptyClaims*20 > claims {
 		invalid("empty claims exceeded 5% of claim attempts")
@@ -557,7 +558,7 @@ func parseFlags(args []string) (config, error) {
 	fs.DurationVar(&cfg.durationMax, "duration-max", 20*time.Second, "longest task duration")
 	fs.IntVar(&cfg.producers, "producers", 4, "producer goroutines, steady mode only")
 	fs.Int64Var(&cfg.targetBacklog, "target-backlog", 1_000_000, "queue length the controller holds")
-	fs.IntVar(&cfg.prefill, "prefill", 26_000_000, "rows inserted before a drain run")
+	fs.IntVar(&cfg.prefill, "prefill", 2_000_000, "rows inserted before a drain run")
 	fs.DurationVar(&cfg.warmup, "warmup", 60*time.Second, "warm-up before measuring")
 	fs.DurationVar(&cfg.window, "window", 5*time.Minute, "measurement window")
 	fs.IntVar(&cfg.repeat, "repeat", 1, "repeats per stage and worker count")
