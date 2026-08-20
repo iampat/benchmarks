@@ -6,4 +6,4 @@ targets.
 
 | Benchmark | Report |
 | --- | --- |
-| [scaling-queue-postgres](scaling-queue-postgres/README.md) | A Postgres task queue, from 796 to 165,700 tasks per second in 8 steps |
+| [scaling-queue-postgres](scaling-queue-postgres/README.md) | A Postgres task queue, from a naive claim query to a sharded one |
