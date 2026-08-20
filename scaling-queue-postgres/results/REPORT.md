@@ -7,6 +7,10 @@
 - Command: `bench -dsn=postgres://postgres@127.0.0.1:55444/postgres -mode=drain -stages=3-partial-index,4-async-commit,5-single-statement -workers=16 -prefill=8000000`
 - Command: `bench -dsn=postgres://postgres@127.0.0.1:55444/postgres -mode=drain -stages=6-sharded,7-batched-completion -workers=64 -prefill=18000000`
 - Command: `bench -dsn=postgres://postgres@127.0.0.1:55444/postgres -mode=drain -stages=7-batched-completion -workers=64 -prefill=24000000 -repeat=3`
+- Command: `bench -dsn=postgres://postgres@127.0.0.1:55444/postgres -mode=ops -stages=7-batched-completion -workers=128 -enqueuers=128 -warmup=15s -window=5m -queue-sample=10s -prefill=0`
+- Command: `bench -dsn=postgres://postgres@127.0.0.1:55444/postgres -mode=ops -stages=7-batched-completion -workers=16 -enqueuers=16 -warmup=15s -window=5m -queue-sample=10s -prefill=0`
+- Command: `bench -dsn=postgres://postgres@127.0.0.1:55444/postgres -mode=ops -stages=7-batched-completion -workers=32 -enqueuers=32 -warmup=15s -window=5m -queue-sample=10s -prefill=0`
+- Command: `bench -dsn=postgres://postgres@127.0.0.1:55444/postgres -mode=ops -stages=7-batched-completion -workers=64 -enqueuers=64 -warmup=15s -window=5m -queue-sample=10s -prefill=0`
 - Command: `bench -dsn=postgres://postgres@127.0.0.1:55444/postgres -mode=steady -stages=0-vanilla,1-skip-locked,2-read-committed -workers=8,16`
 - Command: `bench -dsn=postgres://postgres@127.0.0.1:55444/postgres -mode=steady -stages=3-partial-index,4-async-commit,5-single-statement -workers=16`
 - Command: `bench -dsn=postgres://postgres@127.0.0.1:55444/postgres -mode=steady -stages=6-sharded,7-batched-completion -workers=64,128`
@@ -32,6 +36,32 @@
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | 6-sharded | 30864 | — | 0.68 ms | 7.24 ms | 5.30 ms | 448655 | 3.1% | 0 | 1 |
 | 7-batched-completion | 33241 | +8% | 0.60 ms | 7.06 ms | 7.24 ms | 500279 | 2.1% | 0 | 3 |
+
+### ops
+
+#### 16 claim loops
+
+| stage | tasks/s | vs prev | claim p50 | claim p95 | done p95 | in flight | Little err | retries | runs |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 7-batched-completion | 42005 | — | 0.13 ms | 0.24 ms | 0.00 ms | 0 | 0.0% | 0 | 1 |
+
+#### 32 claim loops
+
+| stage | tasks/s | vs prev | claim p50 | claim p95 | done p95 | in flight | Little err | retries | runs |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 7-batched-completion | 39761 | — | 0.11 ms | 0.18 ms | 0.00 ms | 0 | 0.0% | 0 | 1 |
+
+#### 64 claim loops
+
+| stage | tasks/s | vs prev | claim p50 | claim p95 | done p95 | in flight | Little err | retries | runs |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 7-batched-completion | 26616 | — | 0.19 ms | 0.35 ms | 0.00 ms | 0 | 0.0% | 0 | 1 |
+
+#### 128 claim loops
+
+| stage | tasks/s | vs prev | claim p50 | claim p95 | done p95 | in flight | Little err | retries | runs |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 7-batched-completion | 12018 | — | 0.34 ms | 0.68 ms | 0.00 ms | 0 | 0.0% | 0 | 1 |
 
 ### Benchmark 2, task queue (insert, claim, and complete together)
 

@@ -15,7 +15,67 @@ The DBOS article
 removes three of these costs. This benchmark replicates that path on one
 machine, then goes past it.
 
-## The benchmark
+## Queue operations on their own
+
+Before the task queue, measure the two operations it rests on. One group of
+loops inserts a single row per statement. Another group claims a single row
+per statement. No task runs, nothing writes `DONE`, and nothing sits in
+flight, so a claim is the whole operation. The queue starts empty and finds
+its own length.
+
+| Loops each side | enqueue/s | dequeue/s | operations/s | mean queue |
+| ---: | ---: | ---: | ---: | ---: |
+| 16 | 42,005 | 42,005 | **84,010** | 1,655 |
+| 32 | 39,761 | 39,761 | 79,523 | 186 |
+| 64 | 26,616 | 26,616 | 53,233 | 17 |
+| 128 | 12,018 | 12,018 | 24,036 | 10 |
+
+```
+                    operations per second
+  16 + 16       ║████████████████████████████████████   84,010
+  32 + 32       ║██████████████████████████████████     79,523
+  64 + 64       ║███████████████████████                53,233
+  128 + 128     ║██████████                             24,036
+```
+
+The enqueue and dequeue rates are equal in every row, because a claim cannot
+take a row that no insert has written. Dequeue is the faster side, so the
+queue stays near empty and the insert side sets the pace.
+
+The mean queue length shows this directly. It falls from 1,655 to 10 as the
+groups grow. The queue is empty and the claim loops poll it: 2.5 million
+empty claims at 16 loops each, and 26.7 million at 128. Those polls are
+statements too, and they compete with the inserts they wait for. Adding
+loops past 16 costs throughput.
+
+## A task costs less than a queue operation
+
+The task queue moves nearly as many items per second as the bare queue,
+while doing more with each one.
+
+```
+                    items per second
+  queue ops     ║████████████████████████████████████   42,005
+  task queue    ║█████████████████████████████████      38,904
+
+                    statements per second
+  queue ops     ║████████████████████████████████████   84,010
+  task queue    ║█████████████████                      39,332
+```
+
+The bare queue spends two statements on an item, one insert and one claim.
+The task queue spends about one. It batches inserts 1000 rows at a time and
+completions 100 at a time, so a task costs one claim and little else.
+
+The bare queue needs 2.1 times the statements to move the same items. It
+also does less. The task queue holds each task for 10 to 20 seconds and
+writes `DONE` at the end.
+
+The lesson is the insert. A single row insert is one transaction and one
+write-ahead log flush. Batching the inserts is what buys the task queue its
+rate, and the rest of this report is about the claim.
+
+## The task queue benchmark
 
 Producers, workers, and completers all run together, and a controller holds
 the queue length at 1,000,000 tasks. A worker claims one task, and a
@@ -30,8 +90,8 @@ Each stage runs a 5 minute window at its best worker count. Repeated runs of
 the same cell vary by about 2 percent, so a difference under 4 percent is
 not a difference.
 
-[METHOD.md](METHOD.md) covers the harness and the checks a cell passes
-before it reports a number.
+[METHOD.md](METHOD.md) covers the harness, the checks a cell passes before
+it reports a number, and what those checks found.
 
 ## Results
 
@@ -140,19 +200,6 @@ The 5 minute numbers measure a queue that has been running.
 The best worker count moves too. Over 30 seconds the sharded stage looked
 fastest at 128 claim loops. Over 5 minutes 64 wins, and 128 is 20 percent
 slower.
-
-## Queue operations on their own
-
-**This run is in progress.** A second measurement drops the task entirely.
-One group of loops inserts a single row per statement, and another group
-claims a single row per statement. Nothing runs, and nothing writes `DONE`,
-so a claim is the whole operation. The queue starts empty and finds its own
-length.
-
-A 20 second trial gives 30,919 enqueues and 69,066 claims per second.
-Dequeue runs more than twice as fast as enqueue. A single row insert is one
-transaction and one write-ahead log flush. The insert side becomes the
-expensive half as soon as it stops batching. The 5 minute numbers follow.
 
 ## Other engines
 
