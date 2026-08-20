@@ -15,7 +15,7 @@ The DBOS article
 removes three of these costs. This benchmark replicates that path on one
 machine, then goes past it.
 
-## Queue operations on their own
+## Queue operations
 
 Before the task queue, measure the two operations it rests on. One group of
 loops inserts a single row per statement. Another group claims a single row
@@ -23,12 +23,12 @@ per statement. No task runs, nothing writes `DONE`, and nothing sits in
 flight, so a claim is the whole operation. The queue starts empty and finds
 its own length.
 
-| Loops each side | enqueue/s | dequeue/s | operations/s | mean queue |
-| ---: | ---: | ---: | ---: | ---: |
-| 16 | 42,005 | 42,005 | **84,010** | 1,655 |
-| 32 | 39,761 | 39,761 | 79,523 | 186 |
-| 64 | 26,616 | 26,616 | 53,233 | 17 |
-| 128 | 12,018 | 12,018 | 24,036 | 10 |
+| Loops each side | operations/s | Gain | enqueue/s | dequeue/s | Claim p95 | Empty claims | Mean queue |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 16 | 84,010 | — | 42,005 | 42,005 | 0.24 ms | 2,541,607 | 1,655 |
+| 32 | 79,523 | -5% | 39,761 | 39,761 | 0.18 ms | 7,139,251 | 186 |
+| 64 | 53,233 | -33% | 26,616 | 26,616 | 0.35 ms | 14,460,580 | 17 |
+| 128 | 24,036 | -55% | 12,018 | 12,018 | 0.68 ms | 26,694,454 | 10 |
 
 ```
                     operations per second
