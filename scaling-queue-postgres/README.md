@@ -117,6 +117,132 @@ more dead rows than a 5 minute window builds, and
 
 ## Method
 
-[METHOD.md](METHOD.md) covers the rest. It describes the harness and its
-modes, the flags, and the loop counts. It also lists the checks a cell
-passes before it reports a number.
+Each step keeps every change of the step above it.
+
+### 0. Naive claim query
+
+The obvious query. Take the oldest claimable row, lock it, mark it
+`PENDING`.
+
+```sql
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+SELECT id FROM tasks
+  WHERE queue_name = $1 AND status = 'CREATED'
+  ORDER BY priority, created_at LIMIT 1
+  FOR UPDATE;
+UPDATE tasks SET status = 'PENDING', started_at = now() WHERE id = ANY($1);
+COMMIT;
+```
+
+The index is a plain btree on `(queue_name, created_at)`.
+
+Every worker asks for the same row, so they queue behind one lock. The
+isolation level then aborts the losers with a serialization failure, and
+they try again.
+
+### 1. `SKIP LOCKED`
+
+Two words on the end of the select.
+
+```sql
+  ORDER BY priority, created_at LIMIT 1
+  FOR UPDATE SKIP LOCKED;
+```
+
+A worker that meets a locked row steps over it instead of waiting. This
+helps when there is another row to step onto. With `LIMIT 1` the next row is
+often the one the next worker holds.
+
+### 2. `READ COMMITTED`
+
+The claim runs at `READ COMMITTED` instead of `REPEATABLE READ`.
+
+Each claim is independent, so a queue gains nothing from a stable snapshot
+across statements. `REPEATABLE READ` aborts a transaction that read a row
+another transaction changed. `READ COMMITTED` reads fresh rows for each
+statement, and those aborts stop.
+
+### 3. Partial covering index
+
+```sql
+CREATE INDEX tasks_claim_idx
+  ON tasks (queue_name, status, priority, created_at)
+  WHERE status = 'CREATED';
+```
+
+The old index holds every row ever inserted, so the claim reads finished
+rows and then sorts. This index holds claimable rows only, and returns them
+in claim order. A row leaves the index when it leaves `CREATED`, so Postgres
+stops maintaining an entry for it.
+
+### 4. `synchronous_commit = off`
+
+```sql
+SET synchronous_commit = off;
+```
+
+A commit returns before the write-ahead log flush reaches the disk. A crash
+loses the last moments of acknowledged work. It never corrupts data and
+never loses part of a transaction. A lost claim is re-run, which an
+at-least-once queue already allows.
+
+### 5. One statement per claim
+
+One statement replaces a transaction of two.
+
+```sql
+WITH c AS (
+  SELECT id FROM tasks
+  WHERE queue_name = $1 AND status = 'CREATED'
+  ORDER BY priority, created_at LIMIT $2
+  FOR UPDATE SKIP LOCKED
+)
+UPDATE tasks SET status = 'PENDING', started_at = now()
+WHERE id IN (SELECT id FROM c)
+RETURNING id;
+```
+
+Four messages become one. The row lock also lives for one statement, rather
+than across two round trips. Other workers then wait less for the head of
+the queue.
+
+### 6. Shard the queue head
+
+A `shard` column, an index that leads with it, and a claim that names one
+shard.
+
+```sql
+CREATE INDEX tasks_claim_idx
+  ON tasks (queue_name, shard, priority, created_at)
+  WHERE status = 'CREATED';
+
+SELECT id FROM tasks
+  WHERE queue_name = $1 AND shard = $2 AND status = 'CREATED'
+  ORDER BY priority, created_at LIMIT $3
+  FOR UPDATE SKIP LOCKED;
+```
+
+One queue has one head, and every worker locks the same index pages. A shard
+column gives the queue many heads. A worker owns one shard and never meets
+another worker's rows. The table, the disk, and the log stay single. Order
+weakens from one queue-wide sequence to one sequence per shard.
+
+### 7 and 8. More CPUs
+
+The virtual machine goes from 2 CPUs to 4, and then to 8. Nothing about the
+queue changes. These steps say what the hardware buys, next to what the
+design bought.
+
+### 9. Leave the virtual machine
+
+Postgres runs on the host, with no container.
+
+On macOS a container runs inside a virtual machine. Every packet crosses a
+userspace network proxy, and every flush crosses a virtual disk. This step
+removes both.
+
+## More
+
+[METHOD.md](METHOD.md) covers the harness and its modes, the flags, and the
+loop counts. It also lists the checks a cell passes before it reports a
+number.
