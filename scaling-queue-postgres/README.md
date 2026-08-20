@@ -47,33 +47,6 @@ makes each claim slower still.
 The last step claims as fast as it inserts. Its queue stays near empty, at
 1,655 rows, and the claim loops poll an empty queue 2.5 million times.
 
-## Cost per item
-
-The task queue moves nearly as many items per second as the bare queue,
-while doing more with each one.
-
-```
-                    items per second
-  queue ops     ║████████████████████████████████████   42,005
-  task queue    ║█████████████████████████████████      38,904
-
-                    statements per second
-  queue ops     ║████████████████████████████████████   84,010
-  task queue    ║█████████████████                      39,332
-```
-
-The bare queue spends two statements on an item, one insert and one claim.
-The task queue spends about one. It batches inserts 1000 rows at a time and
-completions 100 at a time, so a task costs one claim and little else.
-
-The bare queue needs 2.1 times the statements to move the same items. It
-also does less. The task queue holds each task for 10 to 20 seconds and
-writes `DONE` at the end.
-
-The lesson is the insert. A single row insert is one transaction and one
-write-ahead log flush. Batching the inserts is what buys the task queue its
-rate, and the rest of this report is about the claim.
-
 ## The task queue benchmark
 
 Producers, workers, and completers all run together, and a controller holds
