@@ -312,13 +312,15 @@ type ProducerConfig struct {
 // controller moves that limit to hold the queue length steady.
 func RunProducer(ctx context.Context, e Creator, cfg ProducerConfig, c *Counters) error {
 	for {
-		// WaitN also fails when the limit is momentarily too low to ever pass
-		// this batch. That is a pause, not a reason to stop producing.
-		if err := cfg.Limiter.WaitN(ctx, cfg.BatchSize); err != nil {
+		// Wait for at most a second at a time. A slow queue needs an insert
+		// rate far below one batch per second, and an unbounded wait would
+		// hold the reservation made under an old limit long after the
+		// controller moved it.
+		waitCtx, cancel := context.WithTimeout(ctx, time.Second)
+		err := cfg.Limiter.WaitN(waitCtx, cfg.BatchSize)
+		cancel()
+		if err != nil {
 			if ctx.Err() != nil {
-				return nil
-			}
-			if sleepCtx(ctx, 10*time.Millisecond) != nil {
 				return nil
 			}
 			continue

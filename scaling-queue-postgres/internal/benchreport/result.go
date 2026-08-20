@@ -44,6 +44,7 @@ type Result struct {
 	MeanInFlight            float64 `json:"mean_in_flight"`
 	ExpectedInFlight        float64 `json:"expected_in_flight"`
 	LittleErrorPercent      float64 `json:"little_error_percent"`
+	LittleTolerancePercent  float64 `json:"little_tolerance_percent"`
 	MeanBacklog             float64 `json:"mean_backlog"`
 	BacklogVariationPercent float64 `json:"backlog_variation_percent"`
 	BacklogStart            int64   `json:"backlog_start"`

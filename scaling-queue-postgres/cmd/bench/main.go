@@ -295,7 +295,7 @@ func runCell(ctx context.Context, ctl *queue.Store, dsn string, st queue.Stage,
 		go queue.RunController(cellCtx, limiter, queue.ControllerConfig{
 			Target:   cfg.targetBacklog,
 			Gain:     0.2,
-			MinRate:  float64(cfg.createBatch) * 10,
+			MinRate:  1,
 			MaxRate:  2_000_000,
 			Interval: 250 * time.Millisecond,
 			Backlog:  backlog,
@@ -392,8 +392,17 @@ func runCell(ctx context.Context, ctl *queue.Store, dsn string, st queue.Stage,
 	if res.BacklogEnd < int64(workers*cfg.batch) {
 		invalid("queue drained before the window ended")
 	}
-	if res.LittleErrorPercent > 10 {
-		invalid(fmt.Sprintf("tasks in flight missed Little's Law by %.0f%%", res.LittleErrorPercent))
+	// Counting noise on N tasks in flight falls off as 1/sqrt(N), so a cell
+	// holding 50 tasks cannot be held to the same tolerance as one holding
+	// 300,000. The floor stays at 10 percent, which binds above about 1,600.
+	tolerance := 10.0
+	if res.ExpectedInFlight > 0 {
+		tolerance = math.Max(tolerance, 400/math.Sqrt(res.ExpectedInFlight))
+	}
+	res.LittleTolerancePercent = tolerance
+	if res.LittleErrorPercent > tolerance {
+		invalid(fmt.Sprintf("tasks in flight missed Little's Law by %.0f%%, tolerance %.0f%%",
+			res.LittleErrorPercent, tolerance))
 	}
 	if sampler.peakInFlight() > float64(cfg.slots)*0.95 {
 		invalid("task slots ran out, so slots capped throughput")
