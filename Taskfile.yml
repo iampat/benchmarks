@@ -1,5 +1,10 @@
 version: "3"
 
+includes:
+  scaling-queue-postgres:
+    taskfile: ./scaling-queue-postgres
+    dir: .
+
 tasks:
   build:
     desc: Build every Bazel target.
@@ -12,7 +17,8 @@ tasks:
       - bazel test //...
 
   check:
-    desc: Build and check formatting. Run before declaring work done.
+    desc: Build, check formatting, and check the documents. Run before declaring work done.
     cmds:
       - bazel build //...
       - bazel run //:format.check
+      - task: scaling-queue-postgres:docs:check

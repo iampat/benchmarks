@@ -1,0 +1,15 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "pgcontainer",
+    srcs = ["container.go"],
+    importpath = "github.com/iampat/benchmarks/scaling-queue-postgres/internal/pgcontainer",
+    visibility = ["//scaling-queue-postgres:__subpackages__"],
+    deps = ["@com_github_jackc_pgx_v5//:pgx"],
+)
+
+go_test(
+    name = "pgcontainer_test",
+    srcs = ["container_test.go"],
+    deps = [":pgcontainer"],
+)

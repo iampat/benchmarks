@@ -1,0 +1,58 @@
+version: "3"
+
+vars:
+  ITEST_PORT: 55433
+  ITEST_DSN: postgres://postgres:itest@127.0.0.1:55433/postgres
+
+tasks:
+  bench:
+    desc: Run cells. One JSON result per cell lands in scaling-queue-postgres/results/.
+    cmds:
+      - bazel run //scaling-queue-postgres/cmd/bench -- {{.CLI_ARGS}}
+
+  bench:quick:
+    desc: Short smoke run to validate the pipeline. Results are not kept.
+    cmds:
+      - bazel run //scaling-queue-postgres/cmd/bench -- -mode=steady
+        -stages=6-sharded -workers=8 -shards=8 -completers=8
+        -duration-min=1s -duration-max=2s -warmup=15s -window=20s
+        -target-backlog=40000 -slots=200000
+        -results-dir={{.TMPDIR | default "/tmp"}}/scaling-queue-smoke {{.CLI_ARGS}}
+
+  bench:ops:
+    desc: Queue operations alone. One group enqueues, another claims, one row each.
+    cmds:
+      - bazel run //scaling-queue-postgres/cmd/bench -- -mode=ops
+        -step=6 -prefill=0 -warmup=15s {{.CLI_ARGS}}
+
+  report:
+    desc: Build scaling-queue-postgres/results/REPORT.md from the recorded results.
+    cmds:
+      - bazel run //scaling-queue-postgres/cmd/report -- {{.CLI_ARGS}}
+
+  docs:
+    desc: Write the measured numbers into README.md and METHOD.md.
+    cmds:
+      - bazel run //scaling-queue-postgres/cmd/report
+
+  docs:check:
+    desc: Fail when a document no longer matches the recorded results.
+    cmds:
+      - bazel run //scaling-queue-postgres/cmd/report -- -check
+
+  ladder:
+    desc: Run the whole experiment, ten steps for each benchmark. Resumes if stopped.
+    cmds:
+      - ./scaling-queue-postgres/run-ladder.sh {{.CLI_ARGS}}
+
+  test:integration:
+    desc: Run the queue integration test against a throwaway container.
+    cmds:
+      - podman run -d --rm --name scaling-queue-itest -p 127.0.0.1:{{.ITEST_PORT}}:5432
+        -e POSTGRES_PASSWORD=itest docker.io/library/postgres:18
+      - defer: podman stop scaling-queue-itest
+      # -h 127.0.0.1 skips the socket-only bootstrap server the image starts first.
+      - until podman exec scaling-queue-itest pg_isready -h 127.0.0.1 -U postgres -q; do sleep 1; done
+      - bazel test //scaling-queue-postgres/internal/queue:queue_test
+        --test_env=PGQUEUE_TEST_DSN={{.ITEST_DSN}}
+        --nocache_test_results --test_output=summary

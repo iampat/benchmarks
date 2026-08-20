@@ -1,0 +1,22 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_binary", "go_library")
+
+go_library(
+    name = "bench_lib",
+    srcs = ["main.go"],
+    importpath = "github.com/iampat/benchmarks/scaling-queue-postgres/cmd/bench",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//scaling-queue-postgres/internal/benchcfg",
+        "//scaling-queue-postgres/internal/benchreport",
+        "//scaling-queue-postgres/internal/experiment",
+        "//scaling-queue-postgres/internal/pgcontainer",
+        "//scaling-queue-postgres/internal/queue",
+        "@org_golang_x_time//rate",
+    ],
+)
+
+go_binary(
+    name = "bench",
+    embed = [":bench_lib"],
+    visibility = ["//visibility:public"],
+)

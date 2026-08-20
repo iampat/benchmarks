@@ -1,0 +1,12 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "benchcfg",
+    srcs = ["config.go"],
+    importpath = "github.com/iampat/benchmarks/scaling-queue-postgres/internal/benchcfg",
+    visibility = ["//scaling-queue-postgres:__subpackages__"],
+    deps = [
+        "//scaling-queue-postgres/internal/experiment",
+        "//scaling-queue-postgres/internal/queue",
+    ],
+)
