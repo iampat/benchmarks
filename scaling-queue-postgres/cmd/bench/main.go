@@ -33,6 +33,7 @@ type config struct {
 	workers        []int
 	completers     int
 	enqueuers      int
+	opsQueueTarget int
 	queueSample    time.Duration
 	slots          int
 	shards         int
@@ -432,13 +433,32 @@ func runOpsCell(ctx context.Context, ctl *queue.Store, res benchreport.Result,
 	errs := make(chan error, workers+cfg.enqueuers)
 	var wg sync.WaitGroup
 
+	limiter := rate.NewLimiter(rate.Inf, 1)
+	if cfg.opsQueueTarget > 0 {
+		limiter = rate.NewLimiter(rate.Limit(cfg.opsQueueTarget), 100)
+	}
 	for i := 0; i < cfg.enqueuers; i++ {
 		eq := queue.StageQueue{Store: pstore, Stage: st, Queue: queueName, Shards: shards}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errs <- queue.RunEnqueuer(cellCtx, eq, &counters)
+			errs <- queue.RunProducer(cellCtx, eq, queue.ProducerConfig{
+				BatchSize: 1,
+				Limiter:   limiter,
+			}, &counters)
 		}()
+	}
+	if cfg.opsQueueTarget > 0 {
+		go queue.RunController(cellCtx, limiter, queue.ControllerConfig{
+			Target:   int64(cfg.opsQueueTarget),
+			Gain:     0.2,
+			MinRate:  1,
+			MaxRate:  2_000_000,
+			Interval: 250 * time.Millisecond,
+			Backlog: func() int64 {
+				return counters.Created.Load() - counters.Claimed.Load()
+			},
+		}, &counters)
 	}
 	for i := 0; i < workers; i++ {
 		lane := claimRec.Lane(i)
@@ -668,6 +688,8 @@ func parseFlags(args []string) (config, error) {
 	fs.StringVar(&cfg.mode, "mode", "steady", "drain or steady")
 	fs.IntVar(&cfg.completers, "completers", 128, "goroutines that write DONE")
 	fs.IntVar(&cfg.enqueuers, "enqueuers", 16, "enqueue loops, ops mode only")
+	fs.IntVar(&cfg.opsQueueTarget, "ops-queue-target", 0,
+		"hold the queue at this length in ops mode, 0 enqueues without a limit")
 	fs.DurationVar(&cfg.queueSample, "queue-sample", 10*time.Second, "queue length sampling interval, ops mode")
 	fs.IntVar(&cfg.slots, "slots", 3_000_000, "maximum tasks in flight")
 	fs.IntVar(&cfg.shards, "shards", 0, "shards for the sharded stages, 0 means one per claim loop")

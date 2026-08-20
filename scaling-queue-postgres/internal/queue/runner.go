@@ -359,24 +359,6 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// RunEnqueuer inserts one row per statement, as fast as the server allows.
-// The operations benchmark measures enqueue and claim as bare operations, so
-// nothing paces this loop.
-func RunEnqueuer(ctx context.Context, e Creator, c *Counters) error {
-	for {
-		if ctx.Err() != nil {
-			return nil
-		}
-		if err := e.Create(ctx, 1); err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-			return err
-		}
-		c.Created.Add(1)
-	}
-}
-
 // RunDequeuer claims one row per statement and then forgets it. No task runs
 // and nothing writes DONE, so a claim is the whole operation.
 func RunDequeuer(ctx context.Context, q Claimer, cfg WorkerConfig, c *Counters) error {
