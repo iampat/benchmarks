@@ -9,8 +9,9 @@ import (
 )
 
 var modeTitles = map[string]string{
-	"drain":  "Benchmark 1, simple queue (insert everything, then consume)",
-	"steady": "Benchmark 2, task queue (insert, claim, and complete together)",
+	"steady": "The task queue (insert, claim, and complete together)",
+	"drain":  "Cross-check (fill the queue, then consume it)",
+	"ops":    "Queue operations (enqueue and claim, one row per statement)",
 }
 
 func BuildReport(results []Result) string {
@@ -52,8 +53,13 @@ func BuildReport(results []Result) string {
 			byWorkers := groupBy(byMode[mode], func(r Result) int { return r.Workers })
 			for _, w := range sortedKeys(byWorkers) {
 				fmt.Fprintf(&b, "\n#### %d claim loops\n\n", w)
-				b.WriteString("| stage | tasks/s | vs prev | claim p50 | claim p95 | done p95 | in flight | Little err | retries | runs |\n")
-				b.WriteString("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n")
+				if mode == "ops" {
+					b.WriteString("| stage | enqueue/s | dequeue/s | operations/s | mean queue | empty claims | runs |\n")
+					b.WriteString("| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n")
+				} else {
+					b.WriteString("| stage | tasks/s | vs prev | claim p50 | claim p95 | done p95 | in flight | Little err | retries | runs |\n")
+					b.WriteString("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n")
+				}
 
 				byStage := groupBy(byWorkers[w], func(r Result) string { return r.Stage })
 				prev := 0.0
@@ -66,6 +72,17 @@ func BuildReport(results []Result) string {
 						continue
 					}
 					tput := median(valid, func(r Result) float64 { return r.ThroughputPerSec })
+					if mode == "ops" {
+						fmt.Fprintf(&b, "| %s | %.0f | %.0f | %.0f | %.0f | %.0f | %d |\n",
+							stage,
+							median(valid, func(r Result) float64 { return r.EnqueuePerSec }),
+							tput,
+							median(valid, func(r Result) float64 { return r.OpsPerSec }),
+							median(valid, func(r Result) float64 { return r.MeanBacklog }),
+							median(valid, func(r Result) float64 { return float64(r.EmptyClaims) }),
+							len(valid))
+						continue
+					}
 					delta := "—"
 					if prev > 0 {
 						delta = fmt.Sprintf("%+.0f%%", (tput/prev-1)*100)

@@ -19,6 +19,12 @@ tasks:
         -target-backlog=40000 -slots=200000
         -results-dir={{.TMPDIR | default "/tmp"}}/scaling-queue-smoke {{.CLI_ARGS}}
 
+  bench:ops:
+    desc: Queue operations alone. One group enqueues, another claims, one row each.
+    cmds:
+      - bazel run //scaling-queue-postgres/cmd/bench -- -mode=ops
+        -stages=7-batched-completion -prefill=0 -warmup=15s {{.CLI_ARGS}}
+
   report:
     desc: Build scaling-queue-postgres/results/REPORT.md from the recorded results.
     cmds:

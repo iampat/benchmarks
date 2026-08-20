@@ -141,8 +141,8 @@ func TestBuildReport(t *testing.T) {
 	})
 
 	for _, want := range []string{
-		"Benchmark 1, simple queue",
-		"Benchmark 2, task queue",
+		"The task queue",
+		"Cross-check",
 		"#### 16 claim loops",
 		"| 0-vanilla | 200 | — |",
 		"| 1-skip-locked | 400 | +100% |",
