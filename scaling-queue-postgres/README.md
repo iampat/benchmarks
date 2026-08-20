@@ -23,22 +23,28 @@ per statement. No task runs, nothing writes `DONE`, and nothing sits in
 flight, so a claim is the whole operation. The queue starts empty and finds
 its own length.
 
-**This run is in progress.** Six of the seven rows are still measuring.
+**This run is in progress.** Three of the seven rows are still measuring.
 
 | Step | operations/s | enqueue/s | dequeue/s | Claim p95 | Empty claims | Mean queue |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 0. Naive claim query | too slow to measure | 21,090 | 0.5 | 64 s | 0 | 3,301,284 |
-| 1. `SKIP LOCKED` | | | | | | |
-| 2. `READ COMMITTED` | | | | | | |
-| 3. Partial covering index | | | | | | |
+| 0. Naive claim query | no rate | 21,090 | 1 | 64 s | 0 | 3,301,284 |
+| 1. `SKIP LOCKED` | no rate | 20,730 | 1 | 41 s | 0 | 3,341,715 |
+| 2. `READ COMMITTED` | 18,416 | 18,400 | 16 | 4.9 s | 0 | 2,613,595 |
+| 3. Partial covering index | 28,722 | 18,687 | 10,035 | 3.2 ms | 213,509 | 1,050,215 |
 | 4. `synchronous_commit = off` | | | | | | |
 | 5. One statement per claim | | | | | | |
 | 6. Shard the queue head | | | | | | |
 
-The naive claim query manages 164 claims in 5 minutes, against 6.3 million
-inserts. It fails the rule that a window must hold 1000 completions, so it
-reports no rate. Its queue grows to 3.3 million rows, and a larger queue
-makes each claim slower still.
+The claim side, not the insert side, decides what this benchmark measures.
+
+The first two steps claim one task per second against 21,000 inserts. They
+fail the rule that a window must hold 1000 completions, so they report no
+rate. Their queues grow past 3 million rows, and a larger queue makes each
+claim slower again.
+
+The partial index breaks the loop. Claims rise from 16 per second to 10,035,
+and claim time falls from 4.9 seconds to 3.2 milliseconds. The queue stops
+growing so fast, and claim loops start to find it empty.
 
 ## The task queue benchmark
 
