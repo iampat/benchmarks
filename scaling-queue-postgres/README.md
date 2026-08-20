@@ -52,31 +52,31 @@ The rate counts operations, which is one enqueue and one claim.
 <!-- begin:generated:ops-table -->
 | Step | rate | Gain | 1B tasks |
 | --- | ---: | ---: | ---: |
-| 0. Naive claim query | | | |
-| 1. `SKIP LOCKED` | | | |
-| 2. `READ COMMITTED` | | | |
-| 3. Partial covering index | | | |
-| 4. `synchronous_commit = off` | | | |
-| 5. One statement per claim | | | |
-| 6. Shard the queue head | | | |
-| 7. Twice the CPUs | | | |
-| 8. Twice the CPUs again | | | |
-| 9. Leave the virtual machine | | | |
+| 0. Naive claim query | 276 | — | 42 days |
+| 1. `SKIP LOCKED` | 293 | +6% | 40 days |
+| 2. `READ COMMITTED` | 477 | +63% | 24 days |
+| 3. Partial covering index | 5,378 | +1029% | 2 days |
+| 4. `synchronous_commit = off` | 5,129 | -5% | 2 days |
+| 5. One statement per claim | 10,492 | +105% | 26 hours |
+| 6. Shard the queue head | 14,153 | +35% | 20 hours |
+| 7. Twice the CPUs | 15,618 | +10% | 18 hours |
+| 8. Twice the CPUs again | 14,198 | -9% | 20 hours |
+| 9. Leave the virtual machine | 79,990 | +463% | 3 hours |
 <!-- end:generated:ops-table -->
 
 <!-- begin:generated:ops-chart -->
 ```
-                   log scale, three marks per doubling1B tasks
-  0 vanilla       ║       —         —
-  1 SKIP LOCKED   ║       —         —
-  2 READ COMMITTED║       —         —
-  3 partial index ║       —         —
-  4 async commit  ║       —         —
-  5 one statement ║       —         —
-  6 sharded       ║       —         —
-  7 VM, 4 CPUs    ║       —         —
-  8 VM, 8 CPUs    ║       —         —
-  9 metal         ║       —         —
+                    log scale, three marks per doubling 1B tasks
+  0 vanilla        ║░                             276    42 days
+  1 SKIP LOCKED    ║░                             293    40 days
+  2 READ COMMITTED ║░░░                           477    24 days
+  3 partial index  ║░░░░░░░░░░░░░░              5,378     2 days
+  4 async commit   ║░░░░░░░░░░░░░░              5,129     2 days
+  5 one statement  ║░░░░░░░░░░░░░░░░░          10,492   26 hours
+  6 sharded        ║░░░░░░░░░░░░░░░░░░         14,153   20 hours
+  7 VM, 4 CPUs     ║░░░░░░░░░░░░░░░░░░         15,618   18 hours
+  8 VM, 8 CPUs     ║░░░░░░░░░░░░░░░░░░         14,198   20 hours
+  9 metal          ║░░░░░░░░░░░░░░░░░░░░░░░░░░ 79,990    3 hours
 ```
 <!-- end:generated:ops-chart -->
 
@@ -92,31 +92,31 @@ The rate counts tasks.
 <!-- begin:generated:task-table -->
 | Step | rate | Gain | 1B tasks |
 | --- | ---: | ---: | ---: |
-| 0. Naive claim query | | | |
-| 1. `SKIP LOCKED` | | | |
-| 2. `READ COMMITTED` | | | |
-| 3. Partial covering index | | | |
-| 4. `synchronous_commit = off` | | | |
-| 5. One statement per claim | | | |
-| 6. Shard the queue head | | | |
-| 7. Twice the CPUs | | | |
-| 8. Twice the CPUs again | | | |
-| 9. Leave the virtual machine | | | |
+| 0. Naive claim query | 7.2 | — | 4.4 years |
+| 1. `SKIP LOCKED` | 7.0 | -3% | 4.6 years |
+| 2. `READ COMMITTED` | 7.9 | +13% | 4.0 years |
+| 3. Partial covering index | 3,716 | +47173% | 3 days |
+| 4. `synchronous_commit = off` | 3,722 | +0% | 3 days |
+| 5. One statement per claim | 5,379 | +45% | 2 days |
+| 6. Shard the queue head | 6,850 | +27% | 41 hours |
+| 7. Twice the CPUs | 12,428 | +81% | 22 hours |
+| 8. Twice the CPUs again | 14,284 | +15% | 19 hours |
+| 9. Leave the virtual machine | 37,676 | +164% | 7 hours |
 <!-- end:generated:task-table -->
 
 <!-- begin:generated:task-chart -->
 ```
-                   log scale, three marks per doubling1B tasks
-  0 vanilla       ║       —         —
-  1 SKIP LOCKED   ║       —         —
-  2 READ COMMITTED║       —         —
-  3 partial index ║       —         —
-  4 async commit  ║       —         —
-  5 one statement ║       —         —
-  6 sharded       ║       —         —
-  7 VM, 4 CPUs    ║       —         —
-  8 VM, 8 CPUs    ║       —         —
-  9 metal         ║       —         —
+                    log scale, three marks per doubling            1B tasks
+  0 vanilla        ║░                                         7.2 4.4 years
+  1 SKIP LOCKED    ║░                                         7.0 4.6 years
+  2 READ COMMITTED ║░░                                        7.9 4.0 years
+  3 partial index  ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░            3,716    3 days
+  4 async commit   ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░            3,722    3 days
+  5 one statement  ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░          5,379    2 days
+  6 sharded        ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░         6,850  41 hours
+  7 VM, 4 CPUs     ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░      12,428  22 hours
+  8 VM, 8 CPUs     ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     14,284  19 hours
+  9 metal          ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 37,676   7 hours
 ```
 <!-- end:generated:task-chart -->
 

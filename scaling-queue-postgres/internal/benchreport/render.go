@@ -113,6 +113,7 @@ func RenderChart(steps []experiment.Step, best map[int]Result) string {
 	for _, s := range steps {
 		nameW = max(nameW, len([]rune(s.Label)))
 	}
+	nameW++ // keep the longest label off the bar
 	numW, timeW := 6, 9
 	lowest := math.Inf(1)
 	for _, s := range steps {
@@ -144,12 +145,17 @@ func RenderChart(steps []experiment.Step, best map[int]Result) string {
 	}
 	barW++
 
-	head := strings.Repeat(" ", 2+nameW+1) + "log scale, " + marksWord(marksPerDoubling) +
+	// The rows and the heading negotiate one width. A short bar can leave the
+	// rows narrower than the heading, so the last column takes up the slack.
+	const legend = "1B tasks"
+	title := strings.Repeat(" ", 2+nameW+1) + "log scale, " + marksWord(marksPerDoubling) +
 		" marks per doubling"
-	if pad := 2 + nameW + 1 + barW + numW + 1 + timeW - len(head) - len("1B tasks"); pad > 0 {
-		head += strings.Repeat(" ", pad)
+	rowW := 2 + nameW + 1 + barW + numW + 1 + timeW
+	if headW := len(title) + 1 + len(legend); headW > rowW {
+		timeW += headW - rowW
+		rowW = headW
 	}
-	head += "1B tasks"
+	head := title + strings.Repeat(" ", rowW-len(title)-len(legend)) + legend
 
 	lines := []string{head}
 	for _, s := range steps {

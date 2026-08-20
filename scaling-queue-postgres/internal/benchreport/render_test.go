@@ -97,6 +97,26 @@ func TestChartColumnsLineUp(t *testing.T) {
 	}
 }
 
+// A narrow range of rates leaves a short bar, so the rows can come out
+// narrower than the heading. The last column takes up the slack.
+func TestChartFitsItsHeadingWhenBarsAreShort(t *testing.T) {
+	steps := experiment.Steps()
+	best := map[int]benchreport.Result{}
+	for i := range steps {
+		best[i] = cell(i, "steady", float64(100+i), true)
+	}
+	lines := strings.Split(benchreport.RenderChart(steps, best), "\n")
+	width := utf8.RuneCountInString(lines[0])
+	for i, l := range lines {
+		if got := utf8.RuneCountInString(l); got != width {
+			t.Errorf("line %d is %d wide, want %d: %q", i, got, width, l)
+		}
+	}
+	if !strings.HasSuffix(lines[0], " 1B tasks") {
+		t.Errorf("heading does not keep a space before its legend: %q", lines[0])
+	}
+}
+
 func TestStepTableMatchesTheStepList(t *testing.T) {
 	steps := experiment.Steps()
 	table := benchreport.RenderStepTable(steps)
