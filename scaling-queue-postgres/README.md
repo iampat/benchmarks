@@ -141,3 +141,25 @@ splits that head, and the shape changes.
 
 The sweep runs past the peak and comes back down, so the peak does not sit
 at the edge of the range.
+
+## Where Postgres runs
+
+**This run is in progress.** The container rows are still measuring.
+
+Every number above comes from Postgres on the host. The rows below run the
+sharded stage at 64 claim loops in three places. The cost of the container,
+and the cost of the CPU count it runs with, then stand apart from the cost
+of the claim path.
+
+| Environment | tasks/s | Gain | 1B tasks |
+| --- | ---: | ---: | ---: |
+| podman VM, 4 CPUs | | | |
+| podman VM, 8 CPUs | | | |
+| Native, no VM | 34,194 | — | 8 hours |
+
+```
+                    log scale, three marks per doubling           1B tasks
+  4 CPUs, in a VM  ║                                          —          —
+  8 CPUs, in a VM  ║                                          —          —
+  metal            ║░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  34,194    8 hours
+```
